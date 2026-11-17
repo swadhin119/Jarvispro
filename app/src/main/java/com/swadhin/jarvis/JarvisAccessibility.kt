@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.swadhin.jarvis.nlu.YouTubeResults
 
 /**
  * Phone control ka engine: screen padhna, tap, type, scroll, Home/Back waghera.
@@ -20,6 +21,11 @@ class JarvisAccessibility : AccessibilityService() {
         @Volatile
         var instance: JarvisAccessibility? = null
     }
+
+    /** One video in YouTube's search results, as seen through accessibility. */
+    class YtResult(val item: YouTubeResults.Item, val node: AccessibilityNodeInfo, val top: Int)
+
+    fun foregroundPackage(): String? = rootInActiveWindow?.packageName?.toString()
 
     override fun onServiceConnected() {
         instance = this
@@ -75,6 +81,40 @@ class JarvisAccessibility : AccessibilityService() {
         f(n)
         for (i in 0 until n.childCount) walk(n.getChild(i), f)
     }
+
+    // ---------- YouTube search results ----------
+
+    /**
+     * Video results currently visible in the YouTube app, top to bottom, without ads and Shorts.
+     * Returns null when YouTube is not the foreground app.
+     */
+    fun youtubeResults(): List<YtResult>? {
+        val root = rootInActiveWindow ?: return null
+        if (root.packageName?.toString() != "com.google.android.youtube") return null
+        val out = ArrayList<YtResult>()
+        val loose = ArrayList<YtResult>()
+        walk(root) { n ->
+            if (n.isVisibleToUser) {
+                val d = n.contentDescription?.toString()
+                if (!d.isNullOrBlank()) {
+                    val r = Rect()
+                    n.getBoundsInScreen(r)
+                    val item = YouTubeResults.parse(d)
+                    if (item != null && !item.isAd && !item.isShort && r.height() >= 40) {
+                        out.add(YtResult(item, n, r.top))
+                    } else if (item == null && r.height() >= 120 && d.length > 25 &&
+                        (d.contains("views", true) || d.contains("व्यू") || d.contains("बार देखा"))
+                    ) {
+                        loose.add(YtResult(YouTubeResults.Item(d.substringBefore(" - ").substringBefore(", "), "", false, false), n, r.top))
+                    }
+                }
+            }
+        }
+        val list = if (out.isNotEmpty()) out else loose
+        return list.distinctBy { it.item.title }.sortedBy { it.top }
+    }
+
+    fun tapNode(node: AccessibilityNodeInfo): Boolean = clickNode(node)
 
     // ---------- Tap ----------
 

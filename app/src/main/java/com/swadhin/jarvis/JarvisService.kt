@@ -20,11 +20,14 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import com.swadhin.jarvis.nlu.Echo
+import com.swadhin.jarvis.nlu.Lang
+import com.swadhin.jarvis.nlu.LanguageDetector
 import java.util.Locale
 import java.util.concurrent.Executors
 
 /**
- * Background me chalne wala Jarvis: sunta hai -> Gemini se sochta hai -> phone par kaam karta hai -> bolta hai.
+ * Background me chalne wala Jarvis: sunta hai -> Assistant (local intents, zarurat ho to Gemini) -> phone par kaam -> bolta hai.
  */
 class JarvisService : Service() {
 
@@ -53,19 +56,27 @@ class JarvisService : Service() {
             RegexOption.IGNORE_CASE
         )
 
-        /** Auto voice chunna: Hindi voices me se gender ke hisaab se. */
-        fun pickVoice(tts: TextToSpeech, wanted: String, gender: String): Voice? {
+        /** Auto voice chunna: bhasha (Hindi / English-India) aur gender ke hisaab se. */
+        fun pickVoice(tts: TextToSpeech, wanted: String, gender: String, english: Boolean = false): Voice? {
             val all = try { tts.voices } catch (e: Exception) { null } ?: return null
-            if (wanted.isNotBlank()) all.firstOrNull { it.name == wanted }?.let { return it }
-            val hindi = all.filter { it.locale.language == "hi" }
-            val hints = if (gender == "female") listOf("hia", "hic", "female") else listOf("hie", "hid", "male")
+            val langCode = if (english) "en" else "hi"
+            if (wanted.isNotBlank()) all.firstOrNull { it.name == wanted && it.locale.language == langCode }?.let { return it }
+            val pool = if (english) all.filter { it.locale.language == "en" && it.locale.country == "IN" }.ifEmpty { all.filter { it.locale.language == "en" } }
+            else all.filter { it.locale.language == "hi" }
+            val hints = when {
+                english && gender == "female" -> listOf("ena", "enb", "female")
+                english -> listOf("end", "enc", "male")
+                gender == "female" -> listOf("hia", "hic", "female")
+                else -> listOf("hie", "hid", "male")
+            }
+            val offline = pool.sortedBy { it.isNetworkConnectionRequired }   // offline voices first: faster, work without internet
             for (h in hints) {
-                hindi.firstOrNull { v ->
+                offline.firstOrNull { v ->
                     val n = v.name.lowercase()
                     if (h == "male") n.contains("male") && !n.contains("female") else n.contains(h)
                 }?.let { return it }
             }
-            return null
+            return offline.firstOrNull()
         }
     }
 
@@ -77,7 +88,11 @@ class JarvisService : Service() {
     private var appliedVoice = "?"
     private lateinit var gemini: GeminiClient
     private lateinit var actions: PhoneActions
+    private lateinit var assistant: Assistant
     private var running = false
+    private var keepAwakeAfter = true     // false after music starts: lyrics must not be taken as commands
+    private var lastSpoken = ""
+    private var lastSpokenAt = 0L
     private var busy = false       // soch raha hai ya bol raha hai
     private var listening = false
     private var awakeUntil = 0L
@@ -89,6 +104,7 @@ class JarvisService : Service() {
         super.onCreate()
         gemini = GeminiClient(this)
         actions = PhoneActions(this)
+        assistant = Assistant(this, actions, gemini)
         try {
             val n = buildNotification()
             if (Build.VERSION.SDK_INT >= 29) {
@@ -115,11 +131,15 @@ class JarvisService : Service() {
                 ttsReady = true
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) { main.post { doneSpeaking() } }
+                    // "p…" = progress line ("searching…"), more speech follows; "f…" = final reply
+                    override fun onDone(utteranceId: String?) {
+                        main.post { lastSpokenAt = System.currentTimeMillis(); if (utteranceId?.startsWith("f") == true) doneSpeaking() }
+                    }
                     @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) { main.post { doneSpeaking() } }
+                    override fun onError(utteranceId: String?) { main.post { if (utteranceId?.startsWith("f") == true) doneSpeaking() } }
                 })
-                speak("Jarvis online है Boss।")
+                val g = assistant.greeting()
+                speak(g.text, g.lang)
             } else {
                 log("TTS engine nahi mila. Google 'Speech Services' install karo.")
                 listen()
@@ -162,13 +182,25 @@ class JarvisService : Service() {
                     it.setRecognitionListener(listener)
                 }
             }
-            val lang = Prefs.listenLang(this)
+            val pref = Prefs.listenLang(this)
+            // hi-IN recogniser understands Hindi, Hinglish and Indian English; "auto" also lets Android 14+ switch to en-IN.
+            val lang = if (pref == "auto") "hi-IN" else pref
             val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang)
                 .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
-                .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 4)
+                .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+            if (pref == "auto") {
+                val both = arrayListOf("hi-IN", "en-IN")
+                i.putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN"))
+                if (Build.VERSION.SDK_INT >= 34) {
+                    i.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true)
+                    i.putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES, both)
+                    i.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
+                    i.putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES, both)
+                }
+            }
             recognizer?.startListening(i)
             listening = true
         } catch (e: Exception) {
@@ -216,6 +248,11 @@ class JarvisService : Service() {
         if (!running) return
         val first = alts.firstOrNull()?.trim().orEmpty()
         if (first.isEmpty()) { listen(); return }
+        // Feedback-loop guard: the mic picked up Jarvis's own last sentence from the speaker.
+        if (Echo.isEcho(first, lastSpoken, System.currentTimeMillis() - lastSpokenAt)) {
+            log("(echo ignored)")
+            listen(); return
+        }
 
         val awake = System.currentTimeMillis() < awakeUntil
         if (!Prefs.wakeWord(this) || awake) {
@@ -228,7 +265,7 @@ class JarvisService : Service() {
             val after = a.substring(m.range.last + 1).trim(' ', ',', '.', '?', '!', '।')
             val before = a.substring(0, m.range.first).trim(' ', ',', '.', '?', '!', '।')
             val cmd = if (after.isNotEmpty()) after else before
-            if (cmd.length < 2) speak("जी Boss?") else handle(cmd)
+            handle(if (cmd.length < 2) "Jarvis" else cmd)
             return
         }
         listen()
@@ -239,7 +276,7 @@ class JarvisService : Service() {
     /** App ke text box se bhi command aa sakta hai. */
     fun submitText(text: String) {
         main.post {
-            if (busy) log("Ruko Boss, pehla kaam chal raha hai…")
+            if (busy) log("Ruko ${Prefs.address(this)}, pehla kaam chal raha hai…")
             else {
                 try { recognizer?.cancel() } catch (e: Exception) {}
                 listening = false
@@ -250,40 +287,43 @@ class JarvisService : Service() {
 
     private fun handle(cmd: String) {
         busy = true
-        log("🗣 Boss: $cmd")
+        log("🗣 ${Prefs.address(this)}: $cmd")
         worker.execute {
-            val reply = gemini.chat(cmd) { name, args ->
-                log("⚙ $name $args")
-                val r = actions.run(name, args)
-                log("   ↳ ${r.toString().take(140)}")
-                r
+            val reply = assistant.handle(cmd) { text, lang -> main.post { if (running) speak(text, lang, final = false) } }
+            main.post {
+                if (!running) return@post
+                keepAwakeAfter = reply.keepAwake || reply.expectAnswer
+                speak(reply.text, reply.lang)
             }
-            main.post { if (running) speak(reply) }
         }
     }
 
     // ---------- Bolna ----------
 
-    private fun speak(text: String) {
+    private fun speak(text: String, lang: Lang = Lang.HINGLISH, final: Boolean = true) {
         busy = true
         try { recognizer?.cancel() } catch (e: Exception) {}
         listening = false
         log("🤖 Jarvis: $text")
+        lastSpoken = text
         val t = tts
-        if (!ttsReady || t == null) { doneSpeaking(); return }
-        applyVoice(t)
-        val r = t.speak(text.take(3500), TextToSpeech.QUEUE_FLUSH, null, "u" + System.nanoTime())
-        if (r != TextToSpeech.SUCCESS) doneSpeaking()
+        if (!ttsReady || t == null) { if (final) doneSpeaking(); return }
+        // English reply -> English (India) voice; anything with Hindi -> Hindi voice (reads English words fine too).
+        val english = lang == Lang.ENGLISH && LanguageDetector.detect(text) == Lang.ENGLISH
+        applyVoice(t, english)
+        val id = (if (final) "f" else "p") + System.nanoTime()
+        val r = t.speak(text.take(3500), TextToSpeech.QUEUE_ADD, null, id)
+        if (r != TextToSpeech.SUCCESS && final) doneSpeaking()
     }
 
-    private fun applyVoice(t: TextToSpeech) {
-        val key = Prefs.voice(this) + "|" + Prefs.gender(this)
+    private fun applyVoice(t: TextToSpeech, english: Boolean) {
+        val key = Prefs.voice(this) + "|" + Prefs.gender(this) + "|" + english
         if (key == appliedVoice) return
         appliedVoice = key
         val male = Prefs.gender(this) != "female"
         try {
-            t.language = Locale("hi", "IN")
-            pickVoice(t, Prefs.voice(this), Prefs.gender(this))?.let { t.voice = it }
+            t.language = if (english) Locale("en", "IN") else Locale("hi", "IN")
+            pickVoice(t, Prefs.voice(this), Prefs.gender(this), english)?.let { t.voice = it }
             t.setPitch(if (male) 0.85f else 1.05f)
             t.setSpeechRate(1.05f)
         } catch (e: Exception) {
@@ -294,8 +334,11 @@ class JarvisService : Service() {
     private fun doneSpeaking() {
         if (!running) return
         busy = false
-        awakeUntil = System.currentTimeMillis() + AWAKE_MS   // itni der bina "Jarvis" bole baat kar sakte ho
-        main.postDelayed({ listen() }, 200)
+        // itni der bina "Jarvis" bole baat kar sakte ho; music chalne ke baad nahi (gaane ke bol command na ban jaayein)
+        awakeUntil = if (keepAwakeAfter) System.currentTimeMillis() + AWAKE_MS else 0L
+        keepAwakeAfter = true
+        lastSpokenAt = System.currentTimeMillis()
+        main.postDelayed({ listen() }, 350)   // speaker ki goonj khatam hone do
     }
 
     // ---------- Notification ----------

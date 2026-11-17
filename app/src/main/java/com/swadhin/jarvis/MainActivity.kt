@@ -41,6 +41,7 @@ class MainActivity : Activity() {
 
     private lateinit var keyBox: EditText
     private lateinit var modelBox: EditText
+    private lateinit var ytKeyBox: EditText
     private lateinit var status: TextView
     private lateinit var permStatus: TextView
     private lateinit var logView: TextView
@@ -116,8 +117,15 @@ class MainActivity : Activity() {
         voiceSpinner = Spinner(this)
         voice.addView(voiceSpinner)
         voice.addView(label("Sunne ki bhasha", dim))
-        voice.addView(spinner(listOf("Hindi + English (Hinglish)", "English (India)"), if (Prefs.listenLang(this) == "en-IN") 1 else 0) { pos ->
-            Prefs.setListenLang(this, if (pos == 1) "en-IN" else "hi-IN")
+        val langs = listOf("auto", "hi-IN", "en-IN")
+        voice.addView(spinner(listOf("Auto: Hindi + English + Hinglish (recommended)", "Hindi / Hinglish only", "English (India) only"),
+            langs.indexOf(Prefs.listenLang(this)).coerceAtLeast(0)) { pos ->
+            Prefs.setListenLang(this, langs[pos])
+        })
+        voice.addView(label("Jarvis aapko kya bulaye", dim))
+        val titles = listOf("Sir", "Boss", "Madam")
+        voice.addView(spinner(titles, titles.indexOf(Prefs.address(this)).coerceAtLeast(0)) { pos ->
+            Prefs.setAddress(this, titles[pos])
         })
         voice.addView(CheckBox(this).apply {
             text = "Sirf \"Jarvis\" bolne par command le (wake word)"
@@ -127,13 +135,27 @@ class MainActivity : Activity() {
         })
         voice.addView(button("🔊  VOICE TEST", false) { testVoice() })
 
+        // ---- Music ----
+        val mus = section(root, "MUSIC / YOUTUBE")
+        mus.addView(label("Default music app (jab app ka naam na bolo)", dim))
+        val apps = listOf("youtube", "ytmusic", "spotify")
+        mus.addView(spinner(listOf("YouTube", "YouTube Music", "Spotify"), apps.indexOf(Prefs.musicApp(this)).coerceAtLeast(0)) { pos ->
+            Prefs.setMusicApp(this, apps[pos])
+        })
+        mus.addView(label("YouTube Data API key (optional)", dim))
+        ytKeyBox = input("khali chhodo to Jarvis screen se pehla video tap karega", true).apply { setText(Prefs.youtubeKey(this@MainActivity)) }
+        mus.addView(ytKeyBox)
+        mus.addView(label("Key ke saath Jarvis exact gaana dhoondh ke seedha chalata hai aur kai match hon to poochta hai. " +
+            "Bina key ke YouTube ke search results me se pehla video Accessibility se tap hota hai. " +
+            "Pause / next / seek ke liye Notification Access on hona chahiye.", dim).apply { textSize = 12f })
+
         // ---- Permissions ----
         val perm = section(root, "PHONE CONTROL / PERMISSIONS")
         permStatus = label("", textCol)
         perm.addView(permStatus)
         perm.addView(button("1. Mic, Contacts, Call, SMS", false) { requestPermissions(runtimePerms(), 1) })
         perm.addView(button("2. Phone Control (Accessibility)", false) { open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) })
-        perm.addView(button("3. Notification Access", false) { open(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
+        perm.addView(button("3. Notification Access (music controls + notifications)", false) { open(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
         perm.addView(button("4. Modify System Settings (brightness)", false) {
             open(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")))
         })
@@ -144,7 +166,7 @@ class MainActivity : Activity() {
 
         // ---- Type command ----
         val cmd = section(root, "COMMAND LIKH KE BHEJO")
-        val cmdBox = input("jaise: YouTube kholo", false)
+        val cmdBox = input("jaise: YouTube par Arijit Singh ka gana chalao", false)
         cmd.addView(cmdBox)
         cmd.addView(button("SEND", true) {
             val t = cmdBox.text.toString().trim()
@@ -191,6 +213,7 @@ class MainActivity : Activity() {
         if (!uiReady) return
         Prefs.setApiKey(this, keyBox.text.toString())
         Prefs.setModel(this, modelBox.text.toString())
+        Prefs.setYoutubeKey(this, ytKeyBox.text.toString())
     }
 
     private fun testApi() {
@@ -204,7 +227,7 @@ class MainActivity : Activity() {
 
     private fun startJarvis() {
         saveApi()
-        if (Prefs.apiKey(this).isBlank()) { toast("Pehle Gemini API key daalo"); return }
+        if (Prefs.apiKey(this).isBlank()) toast("Gemini key nahi hai: basic commands chalenge, mushkil sawal nahi")
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(runtimePerms(), 1)
             toast("Mic permission do, phir START dabao")
@@ -221,7 +244,7 @@ class MainActivity : Activity() {
             JarvisService.pickVoice(t, Prefs.voice(this), Prefs.gender(this))?.let { t.voice = it }
             t.setPitch(if (Prefs.gender(this) == "female") 1.05f else 0.85f)
             t.setSpeechRate(1.05f)
-            t.speak("नमस्ते Boss, मैं Jarvis हूँ। आपके लिए क्या कर सकता हूँ?", TextToSpeech.QUEUE_FLUSH, null, "test")
+            t.speak("नमस्ते ${Prefs.address(this)}, मैं Jarvis हूँ। आपके लिए क्या कर सकता हूँ?", TextToSpeech.QUEUE_FLUSH, null, "test")
         } catch (e: Exception) {
             toast("Voice error: ${e.message}")
         }

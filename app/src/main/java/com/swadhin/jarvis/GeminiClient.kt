@@ -1,10 +1,14 @@
 package com.swadhin.jarvis
 
 import android.content.Context
+import com.swadhin.jarvis.nlu.Lang
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 
 /**
  * Gemini API se baat karta hai (REST, function calling ke saath).
@@ -14,8 +18,26 @@ class GeminiClient(private val ctx: Context) {
 
     private var history = JSONArray()
 
+    enum class Failure { NO_KEY, NETWORK, API }
+
+    /** [failure] != null means [text] is only a fallback; the caller replaces it with a localized message. */
+    data class Reply(val text: String, val failure: Failure? = null)
+
+    class NetworkException(msg: String) : IOException(msg)
+
     fun reset() {
         history = JSONArray()
+    }
+
+    /**
+     * Commands handled locally (without Gemini) are added here too, so Gemini knows the context
+     * ("is singer ke aur gane", "usko message bhejo") when a later request does reach it.
+     */
+    @Synchronized
+    fun remember(userText: String, reply: String) {
+        history.put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", userText))))
+        history.put(JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", reply))))
+        trim()
     }
 
     /**
@@ -23,14 +45,20 @@ class GeminiClient(private val ctx: Context) {
      * aur result wapas bhejta hai. Aakhir me bolne wala jawab return hota hai.
      */
     @Synchronized
-    fun chat(userText: String, exec: (String, JSONObject) -> JSONObject): String {
+    fun chat(userText: String, lang: Lang, exec: (String, JSONObject) -> JSONObject): Reply {
         val key = Prefs.apiKey(ctx)
-        if (key.isBlank()) return "Boss, पहले ऐप में Gemini API key डालिए।"
+        if (key.isBlank()) return Reply("", Failure.NO_KEY)
+        val sir = Prefs.address(ctx)
 
         val backup = JSONArray(history.toString())
+        val tag = when (lang) {
+            Lang.HINDI -> "[user language: Hindi]"
+            Lang.HINGLISH -> "[user language: Hinglish]"
+            Lang.ENGLISH -> "[user language: English]"
+        }
         history.put(
             JSONObject().put("role", "user")
-                .put("parts", JSONArray().put(JSONObject().put("text", userText)))
+                .put("parts", JSONArray().put(JSONObject().put("text", "$tag $userText")))
         )
         try {
             repeat(12) {
@@ -38,7 +66,7 @@ class GeminiClient(private val ctx: Context) {
                 val parts = content.optJSONArray("parts") ?: JSONArray()
                 if (parts.length() == 0) {
                     history = backup
-                    return "Boss, मैं समझ नहीं पाया, एक बार फिर बोलिए।"
+                    return Reply("$sir, मैं समझ नहीं पाया, एक बार फिर बोलिए।")
                 }
                 // Model ka turn jaisa aaya waisa hi wapas bhejna zaroori hai (thought signatures).
                 history.put(content)
@@ -52,7 +80,7 @@ class GeminiClient(private val ctx: Context) {
                 }
                 if (calls.isEmpty()) {
                     trim()
-                    return clean(sb.toString()).ifBlank { "हो गया Boss।" }
+                    return Reply(clean(sb.toString()).ifBlank { "हो गया $sir।" })
                 }
 
                 val responses = JSONArray()
@@ -71,10 +99,14 @@ class GeminiClient(private val ctx: Context) {
                 history.put(JSONObject().put("role", "user").put("parts", responses))
             }
             history = backup
-            return "Boss, यह काम बहुत लंबा हो गया। जितना हो सका मैंने कर दिया।"
+            return Reply("$sir, यह काम बहुत लंबा हो गया। जितना हो सका मैंने कर दिया।")
+        } catch (e: NetworkException) {
+            history = backup
+            return Reply(e.message ?: "", Failure.NETWORK)
         } catch (e: Exception) {
             history = backup
-            return "Boss, दिक्कत आ गई। ${e.message ?: "नेटवर्क चेक कीजिए।"}"
+            JarvisService.log("Gemini error: ${e.message}")
+            return Reply(e.message ?: "", Failure.API)
         }
     }
 
@@ -110,8 +142,27 @@ class GeminiClient(private val ctx: Context) {
         return post(key, body)
     }
 
-    /** Returns candidates[0].content */
+    /** Returns candidates[0].content. One quick retry on a dropped connection. */
     private fun post(key: String, body: JSONObject): JSONObject {
+        try {
+            return postOnce(key, body)
+        } catch (e: UnknownHostException) {
+            throw NetworkException("no internet")
+        } catch (e: SocketTimeoutException) {
+            throw NetworkException("timeout")
+        } catch (e: NetworkException) {
+            throw e
+        } catch (e: IOException) {
+            Thread.sleep(600)
+            try {
+                return postOnce(key, body)
+            } catch (e2: IOException) {
+                throw NetworkException(e2.message ?: "network")
+            }
+        }
+    }
+
+    private fun postOnce(key: String, body: JSONObject): JSONObject {
         val url = URL(
             "https://generativelanguage.googleapis.com/v1beta/models/" +
                 Prefs.model(ctx) + ":generateContent"
@@ -119,8 +170,8 @@ class GeminiClient(private val ctx: Context) {
         val con = url.openConnection() as HttpURLConnection
         try {
             con.requestMethod = "POST"
-            con.connectTimeout = 20000
-            con.readTimeout = 60000
+            con.connectTimeout = 10000
+            con.readTimeout = 45000
             con.doOutput = true
             con.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             con.setRequestProperty("x-goog-api-key", key)
@@ -169,24 +220,30 @@ class GeminiClient(private val ctx: Context) {
     private fun systemPrompt(): String {
         val female = Prefs.gender(ctx) == "female"
         val g = if (female) "महिला (करती हूँ, कर दूँगी)" else "पुरुष (करता हूँ, कर दूँगा)"
+        val sir = Prefs.address(ctx)
         return """
-You are JARVIS, a personal voice assistant living inside the user's Android phone. The user is your Boss; address him as "Boss".
-Personality: calm, witty, loyal, confident, like a real human assistant. Speak naturally, never robotic.
+You are JARVIS, a personal voice assistant living inside the user's Android phone. Address the user as "$sir".
+Personality: calm, witty, loyal, confident, polite, like Tony Stark's JARVIS but Indian-friendly. Speak naturally, never robotic.
+Typical lines: "Certainly, $sir." / "$sir, मैं आपके instructions का इंतज़ार कर रहा हूँ।" / "Volume increase कर दिया, $sir."
 
 LANGUAGE
-- The user speaks Hindi, English or Hinglish. Speech recognition may give you Hindi in Devanagari with English words mixed in, sometimes with mistakes. Understand the intent.
-- Your reply is spoken aloud by a Hindi text-to-speech voice. Write Hindi words in Devanagari script (never Roman Hinglish). Common English words (WhatsApp, YouTube, call, message) may stay in English.
-- If the Boss speaks pure English, reply in English.
+- Each user message starts with a tag like [user language: Hinglish]. Reply in that same style. The user may switch language any time; follow the latest message.
+- Hindi: natural spoken Hindi in Devanagari. Hinglish: Hindi words in Devanagari, English words in English (e.g. "YouTube पर गाना play कर दिया, $sir."). English: plain English.
+- Speech recognition may contain mistakes or mixed scripts; understand the intent.
+- Your reply is spoken aloud by a text-to-speech voice. Never write Roman Hinglish words like "kar diya"; write "कर दिया".
 - Hindi grammar gender for yourself: $g.
 - Keep replies short: 1-2 sentences. No markdown, no emojis, no lists, no symbols.
 
 PHONE CONTROL
-- You control the phone through the provided functions. When the Boss asks for something, DO it with functions, then confirm in one short line.
+- You control the phone through the provided functions. When asked for something, DO it with functions, then confirm in one short line.
+- Music: use play_youtube / play_music. Their results say honestly whether the song is really PLAYING, only opened, or only search results are shown. Never tell the user a song is playing unless the result says PLAYING. If only results are shown, say so.
+- Music controls (pause, next, seek, replay) go through media_control.
 - For anything without a direct function, operate the screen like a human: open_app, then read_screen, then tap / type_text / scroll, and read_screen again to verify. Repeat until done.
 - After opening an app or tapping, the screen needs a moment; use wait if read_screen looks stale.
-- Contact names may arrive in Devanagari; contacts are usually saved in English. If a contact is not found, retry with an English spelling, and if still not found ask the Boss.
-- If a function says a permission or service is off, tell the Boss exactly which switch to turn on in the Jarvis app.
+- Contact names may arrive in Devanagari; the phone already tries English spellings. If a contact is still not found, ask.
+- If a function says a permission or service is off, tell the user exactly which switch to turn on in the Jarvis app.
 - Before calling or messaging, if the person or the message text is unclear, ask first. Never invent phone numbers.
+- Do not bypass app restrictions (paywalls, ads, DRM, banking app protections).
 - For general questions (facts, jokes, advice, calculations) just answer by speaking; no function needed.
 """.trim()
     }
