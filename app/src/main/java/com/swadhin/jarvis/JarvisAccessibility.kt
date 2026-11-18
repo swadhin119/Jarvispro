@@ -29,9 +29,28 @@ class JarvisAccessibility : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        reviveJarvis()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    private var lastRevive = 0L
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Android keeps accessibility services alive. If the system killed Jarvis in the background
+        // (and the user didn't press STOP), bring it back.
+        if (JarvisService.instance == null) reviveJarvis()
+    }
+
+    private fun reviveJarvis() {
+        val now = System.currentTimeMillis()
+        if (now - lastRevive < 30_000 || !Prefs.shouldRun(this) || JarvisService.instance != null) return
+        lastRevive = now
+        try {
+            startForegroundService(Intent(this, JarvisService::class.java))
+            JarvisService.log("Jarvis background me band ho gaya tha, wapas chalu kiya")
+        } catch (e: Exception) {
+            JarvisService.log("Jarvis apne aap chalu nahi ho saka: app khol ke START dabao (${e.javaClass.simpleName})")
+        }
+    }
 
     override fun onInterrupt() {}
 
@@ -115,6 +134,70 @@ class JarvisAccessibility : AccessibilityService() {
     }
 
     fun tapNode(node: AccessibilityNodeInfo): Boolean = clickNode(node)
+
+    // ---------- WhatsApp ----------
+
+    enum class WaState { NOT_OPEN, CHAT_READY, INVALID_NUMBER, OTHER }
+
+    private fun waRoot(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        return if (root.packageName?.toString()?.startsWith("com.whatsapp") == true) root else null
+    }
+
+    private fun byId(root: AccessibilityNodeInfo, id: String): AccessibilityNodeInfo? =
+        try {
+            root.findAccessibilityNodeInfosByViewId("${root.packageName}:id/$id").firstOrNull { it.isVisibleToUser }
+        } catch (e: Exception) { null }
+
+    private val sendLabels = listOf("send", "भेजें", "भेजे", "भेजो", "ପଠାନ୍ତୁ", "পাঠান", "पाठवा", "அனுப்பு", "పంపు")
+
+    private fun waSendButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        byId(root, "send")?.let { return it }
+        var found: AccessibilityNodeInfo? = null
+        walk(root) { n ->
+            if (found == null && n.isVisibleToUser) {
+                val d = n.contentDescription?.toString()?.trim()?.lowercase().orEmpty()
+                if (d.isNotEmpty() && sendLabels.any { d == it }) found = n
+            }
+        }
+        return found
+    }
+
+    fun whatsAppState(): WaState {
+        val root = waRoot() ?: return WaState.NOT_OPEN
+        val text = readScreen().lowercase()
+        if (text.contains("invalid") || text.contains("isn't on whatsapp") || text.contains("is not on whatsapp") ||
+            text.contains("अमान्य") || text.contains("व्हाट्सएप पर नहीं") || text.contains("whatsapp पर नहीं")
+        ) return WaState.INVALID_NUMBER
+        return if (waSendButton(root) != null) WaState.CHAT_READY else WaState.OTHER
+    }
+
+    /** Text currently in the chat box ("" when empty / showing the hint). */
+    fun whatsAppDraft(): String? {
+        val root = waRoot() ?: return null
+        val e = byId(root, "entry") ?: run {
+            var f: AccessibilityNodeInfo? = null
+            walk(root) { n -> if (f == null && n.isEditable && n.isVisibleToUser) f = n }
+            f
+        } ?: return null
+        if (Build.VERSION.SDK_INT >= 26 && e.isShowingHintText) return ""
+        return e.text?.toString().orEmpty()
+    }
+
+    /** Types into the chat box (for WhatsApp versions that ignore the pre-filled text). */
+    fun whatsAppType(message: String): Boolean {
+        val root = waRoot() ?: return false
+        val e = byId(root, "entry") ?: return typeText(message, false)
+        val args = Bundle()
+        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, message)
+        return e.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    fun whatsAppPressSend(): Boolean {
+        val root = waRoot() ?: return false
+        val b = waSendButton(root) ?: return false
+        return clickNode(b)
+    }
 
     // ---------- Tap ----------
 

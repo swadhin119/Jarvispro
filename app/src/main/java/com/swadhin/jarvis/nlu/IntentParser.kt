@@ -24,7 +24,7 @@ object IntentParser {
     private val TRAIL_TRIM = f(
         "karo", "kar", "kardo", "do", "de", "dena", "dedo", "dijiye", "kijiye", "kariye", "karna", "karein", "karen", "kro", "krdo", "please",
         "plz", "pls", "na", "naa", "zara", "jaldi", "abhi", "ab", "sir", "boss", "ji", "now", "for", "me", "yaar", "bhai", "wala", "wali", "wale",
-        "chahiye", "suno", "sunna", "lo", "lijiye", "it", "quickly",
+        "chahiye", "suno", "sunna", "lo", "lijiye", "it", "quickly", "likh", "likhkar", "likhke", "लिख", "लिखकर",
         "करो", "कर", "करदो", "दो", "दे", "देना", "दीजिए", "दिजिए", "कीजिए", "करिए", "करना", "करें", "ना", "जरा", "जल्दी", "अभी", "अब", "सर", "जी",
         "यार", "भाई", "प्लीज", "प्लीज़", "वाला", "वाली", "वाले", "चाहिए", "लो"
     )
@@ -344,20 +344,43 @@ object IntentParser {
 
     // ---------------- WhatsApp ----------------
 
+    /** "ki/की/के" right after the send word means "that"; before it ("Rahul ki mummy") it is possessive. */
+    private val THAT_AFTER_CMD = f("ki", "kee", "ke", "की", "के", "कि")
+    private val WA_FRAME = setOf(C.WHATSAPP, C.MESSAGE, C.LOC, C.APP, C.KO, C.TO)
+
     private fun whatsapp(toks: List<Tok>): Command.WhatsApp {
-        val first = toks.indexOfFirst { it.c == C.WHATSAPP || it.c == C.MESSAGE || it.c == C.SEND }
-        var thatIdx = -1
-        for (i in toks.indices) {
-            val t = toks[i]
-            if (t.c == C.THAT || (t.f == "ki" && i > first && first >= 0)) {
-                // "ki" right after a name is possessive ("Rahul ki"), only treat it as "that" after the command word
-                if (i > first) { thatIdx = i; break }
-            }
+        val cmd = toks.indices.filter { toks[it].c == C.WHATSAPP || toks[it].c == C.MESSAGE || toks[it].c == C.SEND }
+        if (cmd.isEmpty()) return Command.WhatsApp(null, null)
+        val firstCmd = cmd.first()
+        val lastCmd = cmd.last()
+        fun names(list: List<Tok>) = list.filter { it.c == null }.joinToString(" ") { it.orig }.trim().ifEmpty { null }
+
+        // 1) explicit delimiter: "... bhejo ki/की/के/that/saying <message>"
+        var thatIdx = (firstCmd + 1 until toks.size).firstOrNull { toks[it].c == C.THAT } ?: -1
+        if (thatIdx < 0) thatIdx = (lastCmd + 1 until toks.size).firstOrNull { toks[it].f in THAT_AFTER_CMD } ?: -1
+        if (thatIdx >= 0) {
+            val message = join(toks.subList(thatIdx + 1, toks.size)).ifEmpty { null }
+            return Command.WhatsApp(names(toks.subList(0, thatIdx)), message)
         }
-        val message = if (thatIdx >= 0) join(toks.subList(thatIdx + 1, toks.size)).ifEmpty { null } else null
-        val before = if (thatIdx >= 0) toks.subList(0, thatIdx) else toks
-        val to = before.filter { it.c == null }.joinToString(" ") { it.orig }.trim().ifEmpty { null }
-        return Command.WhatsApp(to, message)
+
+        // 2) message spoken after the send word: "WhatsApp par Rahul ko message bhejo, main late aaunga"
+        val tail = trim(toks.subList(lastCmd + 1, toks.size))
+        if (tail.isNotEmpty() && tail.none { it.c == C.KO }) {
+            return Command.WhatsApp(names(toks.subList(0, lastCmd)), join(tail))
+        }
+
+        // 3) message between the person and the send word: "Rahul ko WhatsApp par hello bhejo"
+        val ko = toks.indexOfFirst { it.c == C.KO }
+        val send = toks.indexOfLast { it.c == C.SEND }
+        if (ko >= 0) {
+            var message: String? = null
+            if (send > ko) {
+                val mid = toks.subList(ko + 1, send).dropWhile { it.c in WA_FRAME }
+                message = join(trim(mid)).ifEmpty { null }
+            }
+            return Command.WhatsApp(names(toks.subList(0, ko)), message)
+        }
+        return Command.WhatsApp(names(toks), null)
     }
 
     // ---------------- small talk ----------------

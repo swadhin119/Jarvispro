@@ -350,21 +350,45 @@ class PhoneActions(private val ctx: Context) {
         if (message.isBlank()) return err("Message text missing")
         val r = resolve(to) ?: return contactError(to)
         var num = r.first.replace("+", "")
+        if (num.startsWith("00")) num = num.substring(2)
+        if (num.length == 11 && num.startsWith("0")) num = num.substring(1)
         if (num.length == 10) num = "91$num"
-        if (num.length == 11 && num.startsWith("0")) num = "91" + num.substring(1)
+        if (num.length < 11) return err("The saved number for ${r.second} ($num) looks incomplete")
+        val pkg = listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { music.installed(it) }
+            ?: return err("WhatsApp is not installed")
+        val a = acc
         return try {
-            val uri = Uri.parse("https://wa.me/$num?text=" + Uri.encode(message))
-            launch(Intent(Intent.ACTION_VIEW, uri).setPackage("com.whatsapp"))
-            val a = acc ?: return ok("WhatsApp chat with ${r.second} opened with the message typed, but Accessibility is off so Send was not pressed.")
-            var sent = false
-            for (i in 0 until 6) {
-                Thread.sleep(1000)
-                if (a.tapText("Send")) { sent = true; break }
+            val uri = Uri.parse("https://api.whatsapp.com/send?phone=$num&text=" + Uri.encode(message))
+            launch(Intent(Intent.ACTION_VIEW, uri).setPackage(pkg))
+            if (a == null) return ok("WhatsApp chat with ${r.second} opened with the message typed, but Accessibility is off so Send was not pressed.")
+
+            // 1) wait for the chat screen (up to ~10 s on slow phones)
+            var state = JarvisAccessibility.WaState.NOT_OPEN
+            for (i in 0 until 20) {
+                Thread.sleep(500)
+                state = a.whatsAppState()
+                if (state == JarvisAccessibility.WaState.CHAT_READY || state == JarvisAccessibility.WaState.INVALID_NUMBER) break
+                if (state == JarvisAccessibility.WaState.OTHER && i >= 3 && a.whatsAppDraft() != null) break
             }
-            if (sent) ok("WhatsApp message sent to ${r.second}")
-            else ok("WhatsApp chat opened with the message typed, but the Send button was not found. Use read_screen and tap.")
+            if (state == JarvisAccessibility.WaState.INVALID_NUMBER) return err("${r.second} ($num) is not on WhatsApp")
+            if (state == JarvisAccessibility.WaState.NOT_OPEN) return err("WhatsApp did not open. Unlock the phone and try again.")
+
+            // 2) some WhatsApp versions ignore the pre-filled text: type it
+            if (a.whatsAppDraft().isNullOrBlank()) {
+                a.whatsAppType(message)
+                Thread.sleep(500)
+            }
+
+            // 3) press Send and confirm the box is empty again
+            for (attempt in 0 until 4) {
+                if (a.whatsAppPressSend()) {
+                    Thread.sleep(1000)
+                    if (a.whatsAppDraft()?.isBlank() == true) return ok("WhatsApp message sent to ${r.second}")
+                } else Thread.sleep(700)
+            }
+            ok("WhatsApp chat with ${r.second} opened with the message typed, but the Send button could not be pressed.")
         } catch (e: Exception) {
-            err("WhatsApp failed (installed hai?): ${e.message}")
+            err("WhatsApp failed: ${e.message}")
         }
     }
 

@@ -93,3 +93,10 @@ Mark each ✅ / ❌. "Spoken reply" should be in the same language you used.
 | F3 | Speaker loud, ask something with a long reply | Jarvis does not answer its own voice ("(echo ignored)" in log) |
 | F4 | No Gemini key, basic commands | Work; complex question → "Gemini API key डालिए" |
 | F5 | Leave running 30 min with screen off (battery: No restrictions) | Still responds to "Jarvis" |
+| F6 | Give 10 commands in a row, including 2 YouTube songs and 1 WhatsApp message | Jarvis answers **every** one; it never goes silent after the first |
+| F7 | Phone in Hindi language (Settings > Language), "Rahul ko WhatsApp par message bhejo ki main late aaunga" | Message actually appears as sent in the chat; reply "…भेज दिया" |
+| F8 | WhatsApp to a contact whose number is not on WhatsApp | Reply "…WhatsApp पर नहीं है", no false "sent" |
+| F9 | Force-stop Jarvis from Settings > Apps (Accessibility stays on), open any app | Within ~30 s the LOG shows "wapas chalu kiya" and Jarvis listens again |
+
+If Jarvis ever goes quiet, open the app and check the LOG: lines starting with `(watchdog: …)` show what got stuck
+and that it recovered — please share them.

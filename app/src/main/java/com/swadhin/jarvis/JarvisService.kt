@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Bundle
@@ -35,6 +36,7 @@ class JarvisService : Service() {
         const val ACTION_STOP = "com.swadhin.jarvis.STOP"
         private const val CHANNEL = "jarvis"
         private const val AWAKE_MS = 12000L
+        private const val WATCHDOG_MS = 3000L
 
         @Volatile
         var instance: JarvisService? = null
@@ -93,6 +95,13 @@ class JarvisService : Service() {
     private var keepAwakeAfter = true     // false after music starts: lyrics must not be taken as commands
     private var lastSpoken = ""
     private var lastSpokenAt = 0L
+
+    // ---- watchdog state: Jarvis must never get stuck after a command ----
+    private var busySince = 0L
+    private var listenSince = 0L
+    private var speakingFinalUntil = 0L      // expected end of the final reply (+ margin)
+    private var errorStreak = 0
+    private var simpleRecognizer = false     // true = don't send Android-14 language-switch extras (some phones reject them)
     private var busy = false       // soch raha hai ya bol raha hai
     private var listening = false
     private var awakeUntil = 0L
@@ -137,6 +146,10 @@ class JarvisService : Service() {
                     }
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) { main.post { if (utteranceId?.startsWith("f") == true) doneSpeaking() } }
+                    // Called when speech is cut off (another app took the audio). Without this Jarvis stayed "busy" forever.
+                    override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                        main.post { if (utteranceId?.startsWith("f") == true) doneSpeaking() }
+                    }
                 })
                 val g = assistant.greeting()
                 speak(g.text, g.lang)
@@ -148,11 +161,51 @@ class JarvisService : Service() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             log("Speech recognition nahi mila. Google app install/enable karo.")
         }
+        Prefs.setShouldRun(this, true)
+        main.postDelayed(watchdog, WATCHDOG_MS)
         log("Jarvis chalu ✓")
+    }
+
+    /**
+     * Runs every few seconds. Whatever goes wrong (TTS never reports "done", recogniser never answers,
+     * a listen() restart got lost), this puts Jarvis back into listening mode.
+     */
+    private val watchdog: Runnable = object : Runnable {
+        override fun run() {
+            if (!running) return
+            val now = System.currentTimeMillis()
+            when {
+                busy && speakingFinalUntil > 0 && now > speakingFinalUntil -> {
+                    log("(watchdog: speech finished without callback)")
+                    try { tts?.stop() } catch (e: Exception) {}
+                    doneSpeaking()
+                }
+                busy && speakingFinalUntil == 0L && now - busySince > 75_000 -> {
+                    log("(watchdog: command took too long, listening again)")
+                    busy = false
+                    listen()
+                }
+                listening && now - listenSince > 20_000 -> {
+                    log("(watchdog: recogniser hung, restarting mic)")
+                    resetRecognizer()
+                    listen()
+                }
+                !busy && !listening -> listen()
+            }
+            main.postDelayed(this, WATCHDOG_MS)
+        }
+    }
+
+    private fun resetRecognizer() {
+        try { recognizer?.cancel() } catch (e: Exception) {}
+        try { recognizer?.destroy() } catch (e: Exception) {}
+        recognizer = null
+        listening = false
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            Prefs.setShouldRun(this, false)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -191,7 +244,7 @@ class JarvisService : Service() {
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang)
                 .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
                 .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-            if (pref == "auto") {
+            if (pref == "auto" && !simpleRecognizer) {
                 val both = arrayListOf("hi-IN", "en-IN")
                 i.putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN"))
                 if (Build.VERSION.SDK_INT >= 34) {
@@ -203,8 +256,9 @@ class JarvisService : Service() {
             }
             recognizer?.startListening(i)
             listening = true
+            listenSince = System.currentTimeMillis()
         } catch (e: Exception) {
-            listening = false
+            resetRecognizer()
             log("Mic error: ${e.message}")
             main.postDelayed({ listen() }, 2000)
         }
@@ -222,23 +276,39 @@ class JarvisService : Service() {
         override fun onError(error: Int) {
             listening = false
             if (!running) return
-            if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
-                log("Mic permission nahi hai. App me permission do.")
-                return
-            }
+            val quiet = error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH
+            errorStreak = if (quiet) 0 else errorStreak + 1
             var delay = 250L
-            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT) {
-                try { recognizer?.destroy() } catch (e: Exception) {}
-                recognizer = null
-                delay = 900L
-            } else if (error == SpeechRecognizer.ERROR_NETWORK || error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT || error == SpeechRecognizer.ERROR_SERVER) {
-                delay = 2500L
+            when (error) {
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT, SpeechRecognizer.ERROR_NO_MATCH -> {}
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
+                    // Earlier this stopped listening for good. In the background Android sometimes reports it
+                    // temporarily, so keep retrying (slowly) instead of giving up.
+                    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                        log("Mic permission nahi hai. App me permission do.")
+                        delay = 10_000L
+                    } else { resetRecognizer(); delay = 1500L }
+                }
+                12, 13 -> {   // ERROR_LANGUAGE_NOT_SUPPORTED / ERROR_LANGUAGE_UNAVAILABLE (Android 12+)
+                    if (!simpleRecognizer) log("(language auto-switch not supported here, using hi-IN)")
+                    simpleRecognizer = true
+                    resetRecognizer()
+                }
+                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT, SpeechRecognizer.ERROR_SERVER -> delay = 2500L
+                else -> { resetRecognizer(); delay = 900L }   // CLIENT, BUSY, SERVER_DISCONNECTED, TOO_MANY_REQUESTS…
+            }
+            if (errorStreak >= 4) {
+                // Something keeps failing: start from a clean recogniser, without optional extras, and back off.
+                simpleRecognizer = true
+                resetRecognizer()
+                delay = maxOf(delay, minOf(1000L * errorStreak, 5000L))
             }
             main.postDelayed({ listen() }, delay)
         }
 
         override fun onResults(results: Bundle?) {
             listening = false
+            errorStreak = 0
             val alts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: ArrayList<String>()
             heard(alts)
         }
@@ -287,9 +357,17 @@ class JarvisService : Service() {
 
     private fun handle(cmd: String) {
         busy = true
+        busySince = System.currentTimeMillis()
+        speakingFinalUntil = 0L
         log("🗣 ${Prefs.address(this)}: $cmd")
         worker.execute {
-            val reply = assistant.handle(cmd) { text, lang -> main.post { if (running) speak(text, lang, final = false) } }
+            // Whatever happens inside, a final reply is always spoken, so listening always resumes.
+            val reply = try {
+                assistant.handle(cmd) { text, lang -> main.post { if (running) speak(text, lang, final = false) } }
+            } catch (t: Throwable) {
+                log("Error: ${t.message}")
+                Assistant.Reply("${Prefs.address(this)}, कुछ गड़बड़ हो गई, फिर से बोलिए।", Lang.HINGLISH)
+            }
             main.post {
                 if (!running) return@post
                 keepAwakeAfter = reply.keepAwake || reply.expectAnswer
@@ -301,6 +379,7 @@ class JarvisService : Service() {
     // ---------- Bolna ----------
 
     private fun speak(text: String, lang: Lang = Lang.HINGLISH, final: Boolean = true) {
+        if (!busy) busySince = System.currentTimeMillis()
         busy = true
         try { recognizer?.cancel() } catch (e: Exception) {}
         listening = false
@@ -312,6 +391,8 @@ class JarvisService : Service() {
         val english = lang == Lang.ENGLISH && LanguageDetector.detect(text) == Lang.ENGLISH
         applyVoice(t, english)
         val id = (if (final) "f" else "p") + System.nanoTime()
+        // ~80 ms per character is slow speech; +10 s margin. Used by the watchdog if TTS never says "done".
+        if (final) speakingFinalUntil = System.currentTimeMillis() + text.length.coerceAtMost(3500) * 80L + 10_000L
         val r = t.speak(text.take(3500), TextToSpeech.QUEUE_ADD, null, id)
         if (r != TextToSpeech.SUCCESS && final) doneSpeaking()
     }
@@ -333,7 +414,9 @@ class JarvisService : Service() {
 
     private fun doneSpeaking() {
         if (!running) return
+        if (!busy && speakingFinalUntil == 0L) return     // already handled (callback + watchdog)
         busy = false
+        speakingFinalUntil = 0L
         // itni der bina "Jarvis" bole baat kar sakte ho; music chalne ke baad nahi (gaane ke bol command na ban jaayein)
         awakeUntil = if (keepAwakeAfter) System.currentTimeMillis() + AWAKE_MS else 0L
         keepAwakeAfter = true

@@ -84,6 +84,7 @@ class MainActivity : Activity() {
         row.addView(button("▶  START JARVIS", true) { startJarvis() }, weightParams())
         row.addView(View(this), LinearLayout.LayoutParams(dp(10), 1))
         row.addView(button("■  STOP", false) {
+            Prefs.setShouldRun(this, false)
             stopService(Intent(this, JarvisService::class.java))
             root.postDelayed({ refresh() }, 400)
         }, weightParams())

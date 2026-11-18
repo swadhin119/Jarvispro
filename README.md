@@ -24,6 +24,9 @@ Har push par GitHub Actions pehle intent-detection tests chalata hai, phir APK b
 3. **MUSIC / YOUTUBE**: default music app chuno. Optional: YouTube Data API key (neeche dekho).
 4. **START JARVIS** dabao. Phir bolo: "Jarvis, YouTube par Arijit Singh ka gana chalao".
 
+Agar Android background me Jarvis ko band kar de, to Accessibility service use apne aap wapas chalu kar deti hai
+(jab tak aapne STOP nahi dabaya). Ek watchdog har 3 second check karta hai ki Jarvis atka to nahi.
+
 Jawab ke baad 12 second tak bina "Jarvis" bole agla command de sakte ho (music shuru hone ke baad nahi,
 taaki gaane ke bol command na ban jaayein).
 

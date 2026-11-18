@@ -51,4 +51,8 @@ object Prefs {
 
     fun musicMemory(c: Context): String = sp(c).getString("music_memory", "") ?: ""
     fun setMusicMemory(c: Context, v: String) = sp(c).edit().putString("music_memory", v).apply()
+
+    /** true = user ne START dabaya hai (STOP nahi); background me band ho jaaye to Accessibility service wapas chalu karti hai. */
+    fun shouldRun(c: Context): Boolean = sp(c).getBoolean("should_run", false)
+    fun setShouldRun(c: Context, v: Boolean) = sp(c).edit().putBoolean("should_run", v).apply()
 }

@@ -112,6 +112,20 @@ class IntentParserTest {
         eq(WhatsApp("Rahul", null), "Rahul ko WhatsApp karo")
     }
 
+    @Test fun whatsappAsRecognizerWritesIt() {
+        // Google often writes "कि" (that) as "की" or "के"
+        eq(WhatsApp("राहुल", "मैं लेट आऊंगा"),
+            "राहुल को व्हाट्सएप पर मैसेज भेजो कि मैं लेट आऊंगा",
+            "राहुल को व्हाट्सएप पर मैसेज भेजो की मैं लेट आऊंगा",
+            "जार्विस राहुल को व्हाट्सएप पर मैसेज भेजो के मैं लेट आऊंगा")
+        eq(WhatsApp("Rahul", "main late aaunga"), "Rahul ko WhatsApp par message bhejo ke main late aaunga",
+            "WhatsApp par Rahul ko message bhejo, main late aaunga")
+        // possessive "ki" before the command word is part of the name, not the message
+        eq(WhatsApp("Rahul mummy", "khana ready hai"), "Rahul ki mummy ko WhatsApp par message bhejo ki khana ready hai")
+        eq(WhatsApp("Rahul", "hello"), "Rahul ko WhatsApp par hello bhejo", "WhatsApp par Rahul ko hello likh ke bhejo")
+        eq(WhatsApp("Mummy", "I will be late"), "send a WhatsApp message to Mummy that I will be late", "WhatsApp Mummy that I will be late")
+    }
+
     // ---------------- spec section 2: YouTube ----------------
 
     @Test fun songByArtistAndTitle() {

@@ -370,8 +370,10 @@ class Assistant(
         return when {
             e.contains("permission", true) -> Reply(say.permission(l, "Contacts"), l)
             e.contains("not found", true) -> Reply(say.contactMissing(l, to), l)
+            e.contains("not on WhatsApp") -> Reply(say.notOnWhatsApp(l, to), l)
             e.isNotEmpty() -> Reply(say.failed(l, e), l)
             res.startsWith("WhatsApp message sent") -> Reply(say.whatsappSent(l, res.substringAfter("sent to ").ifBlank { to }), l)
+            res.contains("Accessibility is off") -> Reply(say.whatsappTyped(l, to) + " " + say.permission(l, "Phone Control (Accessibility)"), l)
             else -> Reply(say.whatsappTyped(l, to), l)
         }
     }

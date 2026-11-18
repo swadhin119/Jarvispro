@@ -104,6 +104,7 @@ class Replies(private val sir: String = "Sir") {
     fun askWhatsAppTo(l: Lang) = t(l, "Sure $sir, who should I send it to?", "ज़रूर $sir, किसको message भेजना है?", "ज़रूर $sir, किसको संदेश भेजना है?")
     fun askWhatsAppMsg(l: Lang, who: String) = t(l, "What should I tell $who, $sir?", "$who को क्या message भेजूँ, $sir?", "$who को क्या संदेश भेजूँ, $sir?")
     fun whatsappSent(l: Lang, who: String) = t(l, "Message sent to $who on WhatsApp, $sir.", "$who को WhatsApp पर message भेज दिया, $sir.", "$who को WhatsApp पर संदेश भेज दिया, $sir.")
+    fun notOnWhatsApp(l: Lang, who: String) = t(l, "$sir, $who's number doesn't seem to be on WhatsApp.", "$sir, $who का number WhatsApp पर नहीं है।", "$sir, $who का नंबर WhatsApp पर नहीं है।")
     fun whatsappTyped(l: Lang, who: String) = t(l, "$sir, the message for $who is typed in WhatsApp, please press send.", "$sir, $who के लिए message WhatsApp में type कर दिया है, बस send दबाइए।", "$sir, $who के लिए संदेश WhatsApp में लिख दिया है, बस भेजें दबाइए।")
 
     // ---- alarm / timer ----
