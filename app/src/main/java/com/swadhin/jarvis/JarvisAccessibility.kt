@@ -7,9 +7,15 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
+import com.swadhin.jarvis.nlu.Phonetic
 import com.swadhin.jarvis.nlu.YouTubeResults
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Phone control ka engine: screen padhna, tap, type, scroll, Home/Back waghera.
@@ -38,7 +44,16 @@ class JarvisAccessibility : AccessibilityService() {
         // Android keeps accessibility services alive. If the system killed Jarvis in the background
         // (and the user didn't press STOP), bring it back.
         if (JarvisService.instance == null) reviveJarvis()
+        // Numbers mode: a new screen opened -> renumber its buttons.
+        if (overlayReady && overlay.mode == ScreenOverlay.Mode.NUMBERS &&
+            event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.packageName != packageName
+        ) {
+            mainHandler.removeCallbacks(renumber)
+            mainHandler.postDelayed(renumber, 700)
+        }
     }
+
+    private val renumber = Runnable { if (overlay.mode == ScreenOverlay.Mode.NUMBERS) showNumbers() }
 
     private fun reviveJarvis() {
         val now = System.currentTimeMillis()
@@ -60,6 +75,7 @@ class JarvisAccessibility : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        if (overlayReady) try { overlay.hideAll() } catch (e: Exception) {}
         instance = null
         super.onDestroy()
     }
@@ -199,24 +215,111 @@ class JarvisAccessibility : AccessibilityService() {
         return clickNode(b)
     }
 
-    // ---------- Tap ----------
+    // ---------- helpers ----------
 
-    fun tapText(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var overlayReady = false
+    val overlay: ScreenOverlay by lazy { overlayReady = true; ScreenOverlay(this) }
+
+    /** Window / overlay calls must run on the main thread; Jarvis's commands run on a worker thread. */
+    private fun <T> onMain(block: () -> T): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        val latch = CountDownLatch(1)
+        var r: Result<T>? = null
+        mainHandler.post { r = runCatching(block); latch.countDown() }
+        latch.await(3, TimeUnit.SECONDS)
+        return (r ?: throw IllegalStateException("UI thread busy")).getOrThrow()
+    }
+
+    private fun screen(): Pair<Int, Int> = overlay.screenSize()
+
+    /** All windows' roots: the app, plus dialogs / keyboard / system bars. Active window first. */
+    private fun roots(): List<AccessibilityNodeInfo> {
+        val out = ArrayList<AccessibilityNodeInfo>()
+        rootInActiveWindow?.let { out.add(it) }
+        try {
+            for (w in windows) w.root?.let { r -> if (out.none { it == r } && r.packageName != packageName) out.add(r) }
+        } catch (e: Exception) {}
+        return out
+    }
+
+    // ---------- Gestures: wait until Android has really performed them ----------
+
+    private fun perform(g: GestureDescription, maxMs: Long): Boolean {
+        val latch = CountDownLatch(1)
+        var done = false
+        val cb = object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) { done = true; latch.countDown() }
+            override fun onCancelled(gestureDescription: GestureDescription?) { latch.countDown() }
+        }
+        val sent = onMain { dispatchGesture(g, cb, null) }
+        if (!sent) return false
+        if (Looper.myLooper() == Looper.getMainLooper()) return true
+        latch.await(maxMs + 2000, TimeUnit.MILLISECONDS)
+        return done
+    }
+
+    private fun point(x: Float, y: Float) = Path().apply { moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f)) }
+
+    fun tapAt(x: Float, y: Float): Boolean =
+        perform(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(point(x, y), 0, 60)).build(), 60)
+
+    fun longPressAt(x: Float, y: Float): Boolean =
+        perform(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(point(x, y), 0, 1000)).build(), 1000)
+
+    fun doubleTapAt(x: Float, y: Float): Boolean = perform(
+        GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(point(x, y), 0, 50))
+            .addStroke(GestureDescription.StrokeDescription(point(x, y), 140, 50))
+            .build(), 200
+    )
+
+    fun swipeLine(x1: Float, y1: Float, x2: Float, y2: Float, ms: Long = 380): Boolean {
+        val (w, h) = screen()
+        val p = Path().apply {
+            moveTo(x1.coerceIn(2f, w - 2f), y1.coerceIn(2f, h - 2f))
+            lineTo(x2.coerceIn(2f, w - 2f), y2.coerceIn(2f, h - 2f))
+        }
+        return perform(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, ms)).build(), ms)
+    }
+
+    // ---------- Find & tap by text ----------
+
+    /** Best visible element for a spoken label: exact > starts-with > contains > sounds-like ("सब्सक्राइब" -> "Subscribe"). */
+    fun findByText(text: String): AccessibilityNodeInfo? {
         val want = text.trim().lowercase()
-        if (want.isEmpty()) return false
-        var exact: AccessibilityNodeInfo? = null
-        var partial: AccessibilityNodeInfo? = null
-        walk(root) { n ->
-            if (n.isVisibleToUser) {
-                val l = label(n).lowercase()
-                if (l.isNotEmpty()) {
-                    if (exact == null && l == want) exact = n
-                    else if (partial == null && l.contains(want)) partial = n
-                }
+        if (want.isEmpty()) return null
+        val wantKey = Phonetic.key(want)
+        var best: AccessibilityNodeInfo? = null
+        var bestScore = 0.0
+        var bestTop = Int.MAX_VALUE
+        val r = Rect()
+        for (root in roots()) walk(root) { n ->
+            if (!n.isVisibleToUser) return@walk
+            val l = label(n).lowercase()
+            if (l.isEmpty()) return@walk
+            var score = when {
+                l == want -> 1.0
+                l.startsWith(want) -> 0.9
+                want.length >= 3 && l.contains(want) -> 0.8
+                else -> 0.0
+            }
+            if (score < 0.75 && wantKey.length >= 3 && l.length <= 60) {
+                val k = Phonetic.key(l)
+                val sim = maxOf(Phonetic.similarity(wantKey, k), k.split(' ').maxOfOrNull { Phonetic.similarity(wantKey, it) } ?: 0.0)
+                if (sim >= 0.75) score = maxOf(score, sim * 0.85)
+            }
+            if (score <= 0.0) return@walk
+            n.getBoundsInScreen(r)
+            if (score > bestScore || (score == bestScore && r.top < bestTop)) {
+                best = n; bestScore = score; bestTop = r.top
             }
         }
-        val node = exact ?: partial ?: return false
+        return best
+    }
+
+    fun tapText(text: String): Boolean {
+        val node = findByText(text) ?: return false
         return clickNode(node)
     }
 
@@ -234,12 +337,10 @@ class JarvisAccessibility : AccessibilityService() {
         return tapAt(r.exactCenterX(), r.exactCenterY())
     }
 
-    fun tapAt(x: Float, y: Float): Boolean {
-        val p = Path().apply { moveTo(x, y) }
-        val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(p, 0, 60))
-            .build()
-        return dispatchGesture(g, null, null)
+    fun center(node: AccessibilityNodeInfo): Pair<Float, Float> {
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        return Pair(r.exactCenterX(), r.exactCenterY())
     }
 
     // ---------- Type ----------
@@ -255,33 +356,172 @@ class JarvisAccessibility : AccessibilityService() {
         }
         val node = found ?: return false
         node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         val args = Bundle()
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        if (ok && pressEnter && Build.VERSION.SDK_INT >= 30) {
-            node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-        }
+        if (ok && pressEnter) pressEnter()
         return ok
     }
 
-    // ---------- Scroll / swipe ----------
+    /** Keyboard "Enter / Search / Go". */
+    fun pressEnter(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val f = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (f != null && Build.VERSION.SDK_INT >= 30 &&
+            f.performAction(AccessibilityAction.ACTION_IME_ENTER.id)
+        ) return true
+        for (t in listOf("Search", "Go", "Send", "Done", "खोजें", "जाएं", "भेजें")) if (tapText(t)) return true
+        return false
+    }
 
-    /** direction: down = aage ka content dekhna, up = wapas upar, left / right */
-    fun swipe(direction: String): Boolean {
-        val dm = resources.displayMetrics
-        val w = dm.widthPixels.toFloat()
-        val h = dm.heightPixels.toFloat()
-        val p = Path()
-        when (direction.lowercase()) {
-            "up" -> { p.moveTo(w / 2, h * 0.3f); p.lineTo(w / 2, h * 0.75f) }
-            "left" -> { p.moveTo(w * 0.2f, h / 2); p.lineTo(w * 0.85f, h / 2) }
-            "right" -> { p.moveTo(w * 0.85f, h / 2); p.lineTo(w * 0.2f, h / 2) }
-            else -> { p.moveTo(w / 2, h * 0.75f); p.lineTo(w / 2, h * 0.3f) }
+    // ---------- Scroll ----------
+
+    private fun preciseAction(dir: String): AccessibilityAction = when (dir) {
+        "up" -> AccessibilityAction.ACTION_SCROLL_UP
+        "left" -> AccessibilityAction.ACTION_SCROLL_LEFT
+        "right" -> AccessibilityAction.ACTION_SCROLL_RIGHT
+        else -> AccessibilityAction.ACTION_SCROLL_DOWN
+    }
+
+    /** The list / page that should scroll: under the point if given, else the biggest one on screen. */
+    private fun scrollableFor(dir: String, x: Float?, y: Float?): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        val vertical = dir == "up" || dir == "down"
+        val precise = preciseAction(dir).id
+        val all = ArrayList<Pair<AccessibilityNodeInfo, Rect>>()
+        walk(root) { n ->
+            if (n.isScrollable && n.isVisibleToUser) {
+                val r = Rect(); n.getBoundsInScreen(r)
+                if (!r.isEmpty) all.add(n to r)
+            }
         }
-        val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(p, 0, 300))
-            .build()
-        return dispatchGesture(g, null, null)
+        if (all.isEmpty()) return null
+        var pool = all.filter { (n, _) -> n.actionList.any { it.id == precise } }
+        if (pool.isEmpty()) pool = all.filter { (n, _) ->
+            val cls = n.className?.toString().orEmpty()
+            if (vertical) !cls.contains("ViewPager") && !cls.contains("HorizontalScrollView") else cls.contains("ViewPager") || cls.contains("Horizontal")
+        }
+        if (pool.isEmpty()) return null
+        if (x != null && y != null) {
+            pool.filter { it.second.contains(x.toInt(), y.toInt()) }
+                .minByOrNull { it.second.width().toLong() * it.second.height() }?.let { return it.first }
+        }
+        return pool.maxByOrNull { it.second.width().toLong() * it.second.height() }?.first
+    }
+
+    /**
+     * direction: down = neeche ka content dekhna, up = upar, left / right.
+     * First the app's own scroll action (works in lists, web pages, settings), then a finger swipe as backup.
+     */
+    fun scroll(direction: String, atX: Float? = null, atY: Float? = null): Boolean {
+        val dir = direction.lowercase()
+        val node = scrollableFor(dir, atX, atY)
+        if (node != null) {
+            val precise = preciseAction(dir)
+            if (node.actionList.any { it.id == precise.id } && node.performAction(precise.id)) return true
+            if (dir == "up" || dir == "down") {
+                val generic = if (dir == "up") AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                if (node.performAction(generic)) return true
+            }
+        }
+        return swipe(dir, atX, atY)
+    }
+
+    /** Finger swipe. "down" moves the finger UP, so the content below comes into view. */
+    fun swipe(direction: String, atX: Float? = null, atY: Float? = null): Boolean {
+        val (wi, hi) = screen()
+        val w = wi.toFloat()
+        val h = hi.toFloat()
+        val x = atX ?: (w / 2)
+        val y = atY ?: (h / 2)
+        val dy = h * 0.22f
+        val dx = w * 0.35f
+        return when (direction.lowercase()) {
+            "up" -> swipeLine(x, y - dy, x, y + dy)
+            "left" -> swipeLine(x - dx, y, x + dx, y)
+            "right" -> swipeLine(x + dx, y, x - dx, y)
+            else -> swipeLine(x, y + dy, x, y - dy)
+        }
+    }
+
+    // ---------- Voice cursor / numbers / grid ----------
+
+    fun cursorShow() = onMain { overlay.showCursor() }
+
+    /** fraction = part of the screen to move (0.04 thoda, 0.1 normal, 0.25 bahut) */
+    fun cursorMove(dir: String, fraction: Float) = onMain {
+        overlay.showCursor()
+        val (w, h) = screen()
+        when (dir) {
+            "up" -> overlay.moveCursorBy(0f, -h * fraction)
+            "down" -> overlay.moveCursorBy(0f, h * fraction)
+            "left" -> overlay.moveCursorBy(-w * fraction, 0f)
+            else -> overlay.moveCursorBy(w * fraction, 0f)
+        }
+    }
+
+    fun cursorTo(x: Float, y: Float) = onMain { overlay.showCursor(); overlay.moveCursorTo(x, y) }
+
+    fun cursorPos(): Pair<Float, Float>? = onMain { if (overlay.cursorVisible) Pair(overlay.cx, overlay.cy) else null }
+
+    fun overlayMode(): ScreenOverlay.Mode = if (!overlayReady) ScreenOverlay.Mode.NONE else onMain { overlay.mode }
+
+    fun cursorVisible(): Boolean = overlayReady && onMain { overlay.cursorVisible }
+
+    val overlayActive: Boolean get() = overlayReady && overlay.active
+
+    fun hideOverlay() = onMain { overlay.hideAll() }
+
+    private var numbered: List<AccessibilityNodeInfo> = emptyList()
+
+    /** Puts a number on every button / link / text box. Returns how many. */
+    fun showNumbers(): Int = onMain {
+        val (w, h) = screen()
+        val d = resources.displayMetrics.density
+        val seen = HashSet<String>()
+        val items = ArrayList<Pair<Rect, AccessibilityNodeInfo>>()
+        for (root in roots()) walk(root) { n ->
+            if (n.isVisibleToUser && (n.isClickable || n.isLongClickable || n.isEditable || n.isCheckable)) {
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                if (r.width() > 8 * d && r.height() > 8 * d && r.intersect(0, 0, w, h) && seen.add(r.flattenToString())) items.add(r to n)
+            }
+        }
+        val row = (24 * d).toInt().coerceAtLeast(1)
+        val sorted = items.sortedWith(compareBy({ it.first.top / row }, { it.first.left })).take(99)
+        numbered = sorted.map { it.second }
+        overlay.showNumbers(sorted.map { it.first })
+        sorted.size
+    }
+
+    fun showGrid(): Int = onMain { overlay.showGrid(); overlay.gridRows * overlay.gridCols }
+
+    /** Acts on number n of the current numbers / grid. */
+    fun pickNumber(n: Int, how: String = "click"): Boolean {
+        return when (overlayMode()) {
+            ScreenOverlay.Mode.NUMBERS -> {
+                val node = numbered.getOrNull(n - 1) ?: return false
+                val (x, y) = center(node)
+                when (how) {
+                    "long" -> longPressAt(x, y)
+                    "double" -> doubleTapAt(x, y)
+                    "cursor" -> { cursorTo(x, y); true }
+                    else -> if (node.isEditable) node.performAction(AccessibilityNodeInfo.ACTION_FOCUS) || clickNode(node) else clickNode(node)
+                }
+            }
+            ScreenOverlay.Mode.GRID -> {
+                val (x, y) = onMain { overlay.gridCenter(n) } ?: return false
+                if (cursorVisible()) cursorTo(x, y)
+                when (how) {
+                    "long" -> longPressAt(x, y)
+                    "double" -> doubleTapAt(x, y)
+                    "cursor" -> { cursorTo(x, y); true }
+                    else -> tapAt(x, y)
+                }
+            }
+            else -> false
+        }
     }
 
     // ---------- System buttons ----------

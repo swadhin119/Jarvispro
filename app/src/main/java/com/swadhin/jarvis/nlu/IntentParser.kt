@@ -68,8 +68,8 @@ object IntentParser {
                 pct >= 0 -> Command.Volume(VolOp.SET, pct)
                 has(C.FULL) -> Command.Volume(VolOp.MAX)
                 has(C.MUTE) || has(C.OFF) -> Command.Volume(VolOp.MUTE)
-                has(C.DOWN) -> Command.Volume(VolOp.DOWN)
-                has(C.UP) || has(C.ON) -> Command.Volume(VolOp.UP)
+                has(C.DOWN) || has(C.DIR_DOWN) -> Command.Volume(VolOp.DOWN)
+                has(C.UP) || has(C.ON) || has(C.DIR_UP) -> Command.Volume(VolOp.UP)
                 else -> Command.Unknown(text)
             }
         }
@@ -78,11 +78,14 @@ object IntentParser {
             return when {
                 pct >= 0 -> Command.Brightness(VolOp.SET, pct)
                 has(C.FULL) -> Command.Brightness(VolOp.MAX)
-                has(C.DOWN) -> Command.Brightness(VolOp.DOWN)
-                has(C.UP) -> Command.Brightness(VolOp.UP)
+                has(C.DOWN) || has(C.DIR_DOWN) -> Command.Brightness(VolOp.DOWN)
+                has(C.UP) || has(C.DIR_UP) -> Command.Brightness(VolOp.UP)
                 else -> Command.Unknown(text)
             }
         }
+
+        // ---- screen control: cursor, numbers, grid, click, type, scroll, back/home ----
+        screen(toks, content)?.let { return it }
 
         // ---- seek: "30 second aage karo", "10 second peeche", "forward 1 minute" ----
         if ((has(C.FORWARD) || has(C.BACKWARD) || has(C.SEEK)) && noContent && !nonMusicApp) {
@@ -228,6 +231,125 @@ object IntentParser {
         }
     }
 
+    // ---------------- screen control ----------------
+
+    private val DOUBLE = f("double", "डबल", "dobaar", "दोबार")
+    private val LONG = f("long", "लॉन्ग", "लोंग", "rakho", "rakhna", "रखो", "रखे", "hold", "होल्ड", "der", "देर")
+    private val SMALL = f("thoda", "thodi", "thora", "zara", "jara", "little", "bit", "slightly", "slight", "थोड़ा", "थोड़ी", "जरा", "tiny")
+    private val LARGE = f("bahut", "bohot", "bahot", "zyada", "jyada", "much", "far", "lot", "jyaada", "बहुत", "ज्यादा", "ज़्यादा", "pura", "poora", "full")
+    private val ENTER = f("enter", "एंटर", "इंटर")
+    private val BUTTON = f("button", "btn", "बटन", "icon", "आइकन", "option", "ऑप्शन", "link", "लिंक", "wala", "wali", "wale", "वाला", "वाली", "वाले")
+    private val BOX = f("box", "field", "bar", "बॉक्स", "बार", "khana")
+    private val LIKHO = f("likho", "likh", "लिखो", "लिख", "likhiye")
+    private val PICK_OK = setOf(C.NUM, C.NUMBERS, C.FILLER, C.LOC, C.POSS, C.CLICK, C.PLAY, C.OPEN, C.KO)
+
+    private fun dirOf(toks: List<Tok>, loose: Boolean): String? {
+        for (t in toks) when (t.c) {
+            C.DIR_UP -> return "up"
+            C.DIR_DOWN -> return "down"
+            C.DIR_LEFT -> return "left"
+            C.DIR_RIGHT -> return "right"
+        }
+        if (loose) for (t in toks) when (t.c) {
+            C.UP -> if (t.f == "up") return "up"
+            C.DOWN -> if (t.f == "down") return "down"
+        }
+        return null
+    }
+
+    private fun screen(toks: List<Tok>, allContent: List<Tok>): Command? {
+        val has = { c: String -> toks.any { it.c == c } }
+        val content = allContent.filter { it.f !in BUTTON }
+        val likhoIdx = toks.indexOfFirst { it.f in LIKHO }
+        val typeIdx = toks.indexOfFirst { it.c == C.TYPE }.let { if (it < 0 && !has(C.WHATSAPP) && likhoIdx >= 0) likhoIdx else it }
+        val num = toks.firstOrNull { it.c == C.NUM }?.f?.toIntOrNull()
+        val click = has(C.CLICK)
+        val dbl = toks.any { it.f in DOUBLE }
+        val long = toks.any { it.f in LONG } && (click || has(C.PAUSE))
+        val hide = has(C.HIDE) || has(C.OFF) || has(C.CANCEL)
+        val step = when {
+            toks.any { it.f in SMALL } -> 0.04f
+            toks.any { it.f in LARGE } -> 0.25f
+            else -> 0.1f
+        }
+        val dir = dirOf(toks, loose = has(C.CURSOR) || has(C.SCROLL))
+        val S = { a: ScreenAction -> Command.Screen(a) }
+
+        // overlays
+        if (has(C.GRID) && num == null) return S(if (hide) ScreenAction.OVERLAY_HIDE else ScreenAction.GRID_SHOW)
+        if (has(C.NUMBERS) && num == null && !click) return S(if (hide) ScreenAction.OVERLAY_HIDE else ScreenAction.NUMBERS_SHOW)
+        if (has(C.CURSOR)) {
+            if (hide) return S(ScreenAction.OVERLAY_HIDE)
+            if (dir != null) return Command.Screen(ScreenAction.MOVE_CURSOR, dir, step)
+            if (num != null) return Command.Screen(ScreenAction.PICK, number = num, text = "cursor")
+            if (click) return S(if (long) ScreenAction.LONG_PRESS else if (dbl) ScreenAction.DOUBLE_CLICK else ScreenAction.CLICK)
+            val target = phrase(toks, setOf(C.CURSOR, C.FILLER, C.SHOW, C.OPEN, C.PLAY, C.ON))
+            return if (target.isNotEmpty() && content.isNotEmpty()) Command.Screen(ScreenAction.CURSOR_TO, text = target)
+            else S(ScreenAction.CURSOR_SHOW)
+        }
+
+        // click / double / long press
+        if ((click || (dbl && toks.size <= 4)) && typeIdx < 0) {
+            val others = toks.filter { it.c !in PICK_OK && it.f !in DOUBLE && it.f !in LONG && it.f !in BUTTON }
+            if (num != null && others.isEmpty()) {
+                return Command.Screen(ScreenAction.PICK, number = num, text = if (long) "long" else if (dbl) "double" else "click")
+            }
+            if (toks.any { it.f in ENTER } && content.size <= 1) return S(ScreenAction.ENTER)
+            if (has(C.BACKNAV) && content.isEmpty()) return S(ScreenAction.BACK)
+            if (has(C.HOME) && content.isEmpty()) return S(ScreenAction.HOME)
+            val drop = platformMask(toks)
+            val kept = toks.filterIndexed { i, t -> t.c != C.CLICK && t.c != C.WAKE && t.f !in DOUBLE && t.f !in LONG && t.f !in BUTTON && (!drop[i] || t.c == C.YOUTUBE) }
+            val text = join(trim(kept))
+            val action = when {
+                long -> ScreenAction.LONG_PRESS
+                dbl -> ScreenAction.DOUBLE_CLICK
+                text.isEmpty() -> ScreenAction.CLICK
+                else -> ScreenAction.TAP_TEXT
+            }
+            return Command.Screen(action, text = text)
+        }
+
+        // type text
+        if (typeIdx >= 0) {
+            val clean = { l: List<Tok> -> l.filter { it.f !in ENTER && it.c != C.TYPE && it.f !in LIKHO } }
+            var part = trim(clean(toks.subList(typeIdx + 1, toks.size)).let { l ->
+                val a = l.indexOfFirst { it.c == C.AND }   // "type karo hello aur enter dabao"
+                if (a > 0) l.subList(0, a) else l
+            })
+            if (part.isEmpty()) part = trim(clean(toks.subList(0, typeIdx)))
+            // "search box me Arijit Singh" -> "Arijit Singh"
+            val b = part.indexOfFirst { it.f in BOX }
+            if (b >= 0 && b + 1 < part.size && part[b + 1].f in LOC_WORDS) part = trim(part.subList(b + 2, part.size))
+            val enter = toks.any { it.f in ENTER } || toks.drop(typeIdx + 1).any { it.c == C.SEARCH }
+            return Command.Screen(ScreenAction.TYPE, text = join(part), enter = enter)
+        }
+        if (toks.any { it.f in ENTER } && content.isEmpty()) return S(ScreenAction.ENTER)
+
+        // scroll
+        if (has(C.SCROLL)) return Command.Screen(ScreenAction.SCROLL, dir ?: "down", step)
+
+        // navigation
+        if (has(C.BACKNAV) && content.isEmpty()) return S(ScreenAction.BACK)
+        if (has(C.BACKWARD) && content.isEmpty() && num == null && toks.none { it.c in setOf(C.SEC, C.MIN, C.HOUR) } &&
+            toks.any { it.f in f("jao", "jaao", "go", "जाओ", "chalo", "चलो") }
+        ) return S(ScreenAction.BACK)
+        if (has(C.HOME) && content.isEmpty()) return S(ScreenAction.HOME)
+        if (has(C.RECENTS) && content.isEmpty()) return S(ScreenAction.RECENTS)
+        if (has(C.NOTIF) && content.isEmpty() && (has(C.OPEN) || has(C.SHOW) || dir == "down")) return S(ScreenAction.NOTIF_SHADE)
+
+        // bare direction: "neeche", "thoda upar", "aur neeche karo", "left jao"
+        val strictDir = dirOf(toks, loose = false)
+        if (strictDir != null && content.isEmpty() &&
+            toks.all { it.c in setOf(C.DIR_UP, C.DIR_DOWN, C.DIR_LEFT, C.DIR_RIGHT, C.FILLER, C.AND, C.LOC, C.MORE, C.UP, C.DOWN, C.FULL) || it.f in SMALL || it.f in LARGE }
+        ) return Command.Screen(ScreenAction.MOVE, strictDir, step)
+
+        // a bare number ("5", "number 5", "5 wala") picks from the numbers / grid on screen
+        if (num != null && toks.all { it.c in PICK_OK || it.f in BUTTON }) {
+            return Command.Screen(ScreenAction.PICK, number = num, text = "click")
+        }
+        return null
+    }
+
     // ---------------- phrase extraction ----------------
 
     /** Marks platform words ("YouTube par", "on Spotify") so they can be dropped from a query. */
@@ -248,8 +370,8 @@ object IntentParser {
     private fun trim(list: List<Tok>): List<Tok> {
         var s = 0
         var e = list.size
-        while (s < e && (list[s].f in LEAD_TRIM || list[s].c in GRAMMAR || list[s].c == C.WAKE || list[s].c == C.MY)) s++
-        while (e > s && (list[e - 1].f in TRAIL_TRIM || list[e - 1].c in GRAMMAR || list[e - 1].c == C.WAKE)) e--
+        while (s < e && (list[s].f in LEAD_TRIM || list[s].f in LOC_WORDS || list[s].c in GRAMMAR || list[s].c == C.WAKE || list[s].c == C.MY)) s++
+        while (e > s && (list[e - 1].f in TRAIL_TRIM || list[e - 1].f in LOC_WORDS || list[e - 1].c in GRAMMAR || list[e - 1].c == C.WAKE)) e--
         return list.subList(s, e)
     }
 

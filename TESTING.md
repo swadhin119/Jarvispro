@@ -85,6 +85,21 @@ Mark each ✅ / ❌. "Spoken reply" should be in the same language you used.
 | E8 | "5 minute ka timer lagao" | Timer starts |
 | E9 | "battery kitni hai" / "time kya hua" | Correct values, no Gemini call |
 
+### G. Voice mouse / screen control (Phone Control ON)
+| # | Say | Expected |
+|---|---|---|
+| G1 | Open YouTube, "neeche scroll karo", "upar scroll karo", "bahut neeche scroll karo" | Feed scrolls each time |
+| G2 | Open Settings, "neeche" (no cursor) | Scrolls |
+| G3 | "cursor dikhao" | Arrow pointer appears in the middle |
+| G4 | "neeche", "thoda left", "bahut upar" (no "Jarvis" needed) | Pointer moves, a short tick each time |
+| G5 | Put pointer on an app icon, "click karo" | App opens; pointer stays on screen |
+| G6 | "numbers dikhao" → "5" | Numbers on all buttons; item 5 is tapped and new screen is renumbered |
+| G7 | "grid dikhao" → "7 par click karo" | Box 7 tapped |
+| G8 | YouTube: "Subscribe par click karo" and "सब्सक्राइब दबाओ" | Subscribe tapped |
+| G9 | Search box: "search box me Arijit Singh type karo aur enter dabao" | Typed and searched |
+| G10 | "back jao", "home par jao" | Back / Home |
+| G11 | "cursor hatao" | Pointer gone; Jarvis needs "Jarvis" again |
+
 ### F. Robustness
 | # | Do | Expected |
 |---|---|---|

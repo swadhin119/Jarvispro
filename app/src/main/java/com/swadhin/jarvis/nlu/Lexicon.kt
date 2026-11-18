@@ -50,6 +50,12 @@ object C {
     const val FILLER = "FILLER"
     const val NUM = "NUM"
     const val CANCEL = "CANCEL"
+
+    // screen control / voice cursor
+    const val CURSOR = "CURSOR"; const val NUMBERS = "NUMBERS"; const val GRID = "GRID"; const val HIDE = "HIDE"
+    const val CLICK = "CLICK"; const val TYPE = "TYPE"; const val SCROLL = "SCROLL"
+    const val DIR_UP = "DIR_UP"; const val DIR_DOWN = "DIR_DOWN"; const val DIR_LEFT = "DIR_LEFT"; const val DIR_RIGHT = "DIR_RIGHT"
+    const val BACKNAV = "BACKNAV"; const val HOME = "HOME"; const val RECENTS = "RECENTS"; const val NOTIF = "NOTIF"
 }
 
 object Lexicon {
@@ -151,6 +157,22 @@ object Lexicon {
         C.POSS to listOf("ka", "ke", "ki", "का", "के", "की", "wala", "wale", "wali", "वाला", "वाले", "वाली", "of", "by"),
         C.LOC to listOf("par", "pe", "per", "mein", "me", "mai", "main_loc", "on", "in", "at", "से_loc", "पर", "पे", "में", "मे"),
         C.KO to listOf("ko", "को"),
+        C.CURSOR to listOf("cursor", "cursur", "curser", "mouse", "pointer", "कर्सर", "करसर", "माउस", "पॉइंटर", "पोइंटर"),
+        C.NUMBERS to listOf("numbers", "number", "numbering", "नंबर", "नम्बर", "नंबर्स", "labels", "label"),
+        C.GRID to listOf("grid", "ग्रिड", "khane", "खाने"),
+        C.HIDE to listOf("hatao", "hata", "hatado", "hataiye", "hide", "remove", "chupao", "chhupao", "हटाओ", "हटा", "हटादो", "हटाइए", "छुपाओ", "छिपाओ"),
+        C.CLICK to listOf("click", "klik", "tap", "dabao", "daba", "dabaye", "dabaiye", "dabana", "dabado", "press", "select", "choose",
+            "क्लिक", "कलिक", "टैप", "टेप", "दबाओ", "दबा", "दबाएं", "दबाइए", "दबाना", "दबादो", "प्रेस", "सेलेक्ट", "सिलेक्ट"),
+        C.TYPE to listOf("type", "typing", "टाइप", "टाईप"),
+        C.SCROLL to listOf("scroll", "scrol", "skrol", "scrolling", "स्क्रॉल", "स्क्रोल", "स्क्राल"),
+        C.DIR_UP to listOf("upar", "uper", "oopar", "upper", "ऊपर", "उपर", "ऊपरी"),
+        C.DIR_DOWN to listOf("neeche", "niche", "nichay", "neche", "नीचे", "निचे", "नीचें"),
+        C.DIR_LEFT to listOf("left", "baayein", "bayen", "baaye", "baen", "बाएं", "बाएँ", "बाये", "लेफ्ट", "उल्टा"),
+        C.DIR_RIGHT to listOf("right", "daayein", "dayen", "daaye", "daen", "दाएं", "दाएँ", "दाये", "राइट", "सीधा"),
+        C.BACKNAV to listOf("back", "wapas", "vapas", "waapas", "वापस", "बैक"),
+        C.HOME to listOf("home", "होम"),
+        C.RECENTS to listOf("recent", "recents", "रीसेंट", "रिसेंट"),
+        C.NOTIF to listOf("notification", "notifications", "नोटिफिकेशन", "नोटिफिकेशंस", "notif"),
         C.CANCEL to listOf("cancel", "chhodo", "chodo", "rehne", "rahne", "nevermind", "कैंसल", "छोड़ो", "छोडो", "रहने"),
         C.FILLER to listOf(
             "please", "plz", "pls", "plis", "kar", "karo", "kardo", "karna", "kariye", "kijiye", "karein", "karen", "kro", "krdo",
@@ -166,7 +188,7 @@ object Lexicon {
             "अभी", "अब", "तो", "यार", "भाई", "सर", "जी", "हे", "हाय", "हेलो", "ओके", "एक", "कोई", "कुछ", "सा", "से", "है", "हैं", "हो", "होगा", "होगी",
             "था", "रहा", "रहे", "रही", "जाए", "जाओ", "लो", "लीजिए", "सकते", "क्या", "कैसा", "कैसी", "कैसे", "भी", "मुझे", "मुझको", "हमें", "लिए",
             "आप", "तुम", "ये", "यह", "वो", "वह", "इस", "उस", "इसको", "प्लीज", "प्लीज़", "बस", "कितना", "कितनी", "कितने", "kitna", "kitni", "kitne",
-            "chahiye", "चाहिए", "rahega", "rahegi", "रहेगा", "रहेगी", "hogi_", "lagega", "लगेगा", "hua", "हुआ", "hui", "हुई", "baat", "जल्दी"
+            "chahiye", "चाहिए", "le", "ले", "lao", "laao", "लाओ", "go", "jaao", "जाइए", "page", "पेज", "screen", "स्क्रीन", "baar", "बार", "rahega", "rahegi", "रहेगा", "रहेगी", "hogi_", "lagega", "लगेगा", "hua", "हुआ", "hui", "हुई", "baat", "जल्दी"
         )
     )
 

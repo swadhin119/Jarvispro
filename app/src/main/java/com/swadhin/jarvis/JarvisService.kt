@@ -21,6 +21,8 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.media.AudioManager
+import android.media.ToneGenerator
 import com.swadhin.jarvis.nlu.Echo
 import com.swadhin.jarvis.nlu.Lang
 import com.swadhin.jarvis.nlu.LanguageDetector
@@ -219,6 +221,7 @@ class JarvisService : Service() {
         try { recognizer?.destroy() } catch (e: Exception) {}
         recognizer = null
         try { tts?.stop(); tts?.shutdown() } catch (e: Exception) {}
+        try { tone?.release() } catch (e: Exception) {}
         worker.shutdownNow()
         try { wakeLock?.release() } catch (e: Exception) {}
         log("Jarvis band")
@@ -378,7 +381,21 @@ class JarvisService : Service() {
 
     // ---------- Bolna ----------
 
+    private var tone: ToneGenerator? = null
+
+    /** Short "done" tick instead of words (used while steering the cursor: fast feedback). */
+    private fun tick() {
+        try {
+            if (tone == null) tone = ToneGenerator(AudioManager.STREAM_MUSIC, 45)
+            tone?.startTone(ToneGenerator.TONE_PROP_ACK, 120)
+        } catch (e: Exception) {}
+    }
+
     private fun speak(text: String, lang: Lang = Lang.HINGLISH, final: Boolean = true) {
+        if (text.isBlank()) {
+            if (final) { tick(); busy = true; main.postDelayed({ doneSpeaking() }, 250) }
+            return
+        }
         if (!busy) busySince = System.currentTimeMillis()
         busy = true
         try { recognizer?.cancel() } catch (e: Exception) {}
@@ -418,7 +435,13 @@ class JarvisService : Service() {
         busy = false
         speakingFinalUntil = 0L
         // itni der bina "Jarvis" bole baat kar sakte ho; music chalne ke baad nahi (gaane ke bol command na ban jaayein)
-        awakeUntil = if (keepAwakeAfter) System.currentTimeMillis() + AWAKE_MS else 0L
+        // Cursor / numbers / grid on screen = "control mode": keep listening without "Jarvis" for 30 s after each command.
+        val control = JarvisAccessibility.instance?.overlayActive == true
+        awakeUntil = when {
+            control -> System.currentTimeMillis() + 30_000L
+            keepAwakeAfter -> System.currentTimeMillis() + AWAKE_MS
+            else -> 0L
+        }
         keepAwakeAfter = true
         lastSpokenAt = System.currentTimeMillis()
         main.postDelayed({ listen() }, 350)   // speaker ki goonj khatam hone do

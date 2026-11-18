@@ -25,6 +25,13 @@ enum class VolOp { UP, DOWN, SET, MUTE, UNMUTE, MAX }
 
 enum class InfoType { TIME, DATE, BATTERY }
 
+/** Screen control by voice. */
+enum class ScreenAction {
+    MOVE,          // "neeche", "thoda upar": moves the cursor if it is on screen, otherwise scrolls
+    MOVE_CURSOR, SCROLL, CURSOR_SHOW, CURSOR_TO, OVERLAY_HIDE, NUMBERS_SHOW, GRID_SHOW,
+    CLICK, DOUBLE_CLICK, LONG_PRESS, TAP_TEXT, PICK, TYPE, ENTER, BACK, HOME, RECENTS, NOTIF_SHADE
+}
+
 enum class Talk { GREETING, WHAT_DOING, HOW_ARE_YOU, THANKS, WHO_ARE_YOU, WAKE_ONLY }
 
 /** A request Jarvis can execute locally (no Gemini call needed), or [Unknown] for the AI fallback. */
@@ -58,6 +65,16 @@ sealed class Command {
     data class Maps(val query: String, val navigate: Boolean) : Command()
     data class Info(val what: InfoType) : Command()
     data class SmallTalk(val kind: Talk) : Command()
+    /** dir: up/down/left/right; step: fraction of the screen; for PICK, text = click/long/double/cursor */
+    data class Screen(
+        val action: ScreenAction,
+        val dir: String? = null,
+        val step: Float = 0.1f,
+        val text: String = "",
+        val number: Int = -1,
+        val enter: Boolean = false
+    ) : Command()
+
     object Cancel : Command() { override fun toString() = "Cancel" }
     data class Unknown(val text: String) : Command()
 }

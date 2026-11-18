@@ -70,6 +70,9 @@ class PhoneActions(private val ctx: Context) {
         "tap" -> tap(a.optString("text"))
         "type_text" -> typeText(a.optString("text"), a.optBoolean("press_enter", false))
         "scroll" -> scroll(a.optString("direction", "down"))
+        "show_numbers" -> acc?.let { ok("Numbers shown on ${it.showNumbers()} items. Call tap_number with the number of the item to tap.") } ?: err(noAcc)
+        "tap_number" -> acc?.let { if (it.pickNumber(a.optInt("number"), a.optString("how", "click"))) { Thread.sleep(900); ok("Tapped number ${a.optInt("number")}") } else err("No such number on screen; call show_numbers again") } ?: err(noAcc)
+        "press_enter" -> acc?.let { if (it.pressEnter()) ok("Enter pressed") else err("No keyboard action available") } ?: err(noAcc)
         "wait" -> { Thread.sleep((a.optInt("seconds", 1).coerceIn(1, 8)) * 1000L); ok("waited") }
         "device_info" -> deviceInfo()
         "read_notifications" -> notifications()
@@ -513,7 +516,7 @@ class PhoneActions(private val ctx: Context) {
 
     private fun scroll(direction: String): JSONObject {
         val a = acc ?: return err(noAcc)
-        return if (a.swipe(direction)) { Thread.sleep(700); ok("Scrolled $direction") } else err("Scroll failed")
+        return if (a.scroll(direction)) { Thread.sleep(600); ok("Scrolled $direction") } else err("This screen did not scroll")
     }
 
     // ---------- Info ----------
@@ -582,6 +585,9 @@ class PhoneActions(private val ctx: Context) {
             .put(fn("tap", "Tap a button or item on the screen by its visible text or label.", p("text", "STRING", "Visible text or label of the item")))
             .put(fn("type_text", "Type text into the focused or first text box on screen.", p("text", "STRING", "Text to type"), p("press_enter", "BOOLEAN", "Press enter/search after typing", false)))
             .put(fn("scroll", "Scroll the screen.", p("direction", "STRING", "down (see more), up, left or right")))
+            .put(fn("show_numbers", "Put a number on every tappable item on screen. Use when tap by text fails (icons without labels)."))
+            .put(fn("tap_number", "Tap the item with this number (after show_numbers).", p("number", "INTEGER", "Number shown on the item"), p("how", "STRING", "click, long or double", false)))
+            .put(fn("press_enter", "Press the keyboard Enter / Search / Go key."))
             .put(fn("wait", "Wait for the screen to load.", p("seconds", "INTEGER", "1-8")))
             .put(fn("device_info", "Get battery level, charging state, current time and date."))
             .put(fn("read_notifications", "Get the latest notifications received on the phone."))

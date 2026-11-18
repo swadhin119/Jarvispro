@@ -89,6 +89,20 @@ class Replies(private val sir: String = "Sir") {
     fun failed(l: Lang, why: String) = t(l, "$sir, that didn't work: $why", "$sir, ये नहीं हो पाया: $why", "$sir, यह नहीं हो पाया: $why")
     fun permission(l: Lang, what: String) = t(l, "$sir, please turn on $what for Jarvis in the app.", "$sir, Jarvis app में $what permission on कर दीजिए।", "$sir, Jarvis ऐप में $what की अनुमति चालू कर दीजिए।")
 
+    // ---- screen control ----
+    fun cursorShown(l: Lang) = t(l, "Cursor is on screen, $sir. Say up, down, left, right, then click.", "Cursor screen पर है, $sir. ऊपर, नीचे, left, right बोलिए, फिर click.", "कर्सर स्क्रीन पर है, $sir. ऊपर, नीचे, बाएं, दाएं बोलिए, फिर क्लिक।")
+    fun numbersShown(l: Lang, n: Int) = t(l, "$n numbers on screen. Say a number.", "Screen पर $n numbers हैं. Number बोलिए.", "स्क्रीन पर $n नंबर हैं। नंबर बोलिए।")
+    fun gridShown(l: Lang, n: Int) = t(l, "Grid 1 to $n is on screen. Say a number.", "Grid 1 से $n तक है. Number बोलिए.", "ग्रिड 1 से $n तक है। नंबर बोलिए।")
+    fun overlayHidden(l: Lang) = t(l, "Removed, $sir.", "हटा दिया, $sir.", "हटा दिया, $sir.")
+    fun noNumbers(l: Lang) = t(l, "$sir, say \"numbers dikhao\" or \"grid dikhao\" first, then the number.", "$sir, पहले \"numbers दिखाओ\" या \"grid दिखाओ\" बोलिए, फिर number.", "$sir, पहले \"नंबर दिखाओ\" या \"ग्रिड दिखाओ\" बोलिए, फिर नंबर।")
+    fun badNumber(l: Lang, n: Int) = t(l, "There is no number $n on screen, $sir.", "Screen पर $n number नहीं है, $sir.", "स्क्रीन पर $n नंबर नहीं है, $sir.")
+    fun notOnScreen(l: Lang, what: String) = t(l, "$sir, I can't find $what on screen. Say \"numbers dikhao\" and pick a number.", "$sir, screen पर $what नहीं मिला. \"numbers दिखाओ\" बोलकर number चुनिए.", "$sir, स्क्रीन पर $what नहीं मिला। \"नंबर दिखाओ\" बोलकर नंबर चुनिए।")
+    fun noTextBox(l: Lang) = t(l, "$sir, there is no text box. Tap one first.", "$sir, कोई text box नहीं मिला. पहले box पर click करवाइए.", "$sir, लिखने की जगह नहीं मिली। पहले उस पर क्लिक करवाइए।")
+    fun cantScroll(l: Lang) = t(l, "$sir, this screen did not scroll.", "$sir, ये screen scroll नहीं हुई.", "$sir, यह स्क्रीन स्क्रॉल नहीं हुई।")
+    fun actionFailed(l: Lang) = t(l, "$sir, that didn't work on this screen.", "$sir, इस screen पर ये नहीं हो पाया.", "$sir, इस स्क्रीन पर यह नहीं हो पाया।")
+    fun typed(l: Lang, text: String) = t(l, "Typed $text.", "$text type कर दिया.", "$text लिख दिया।")
+    fun needAccessibility(l: Lang) = permission(l, "Phone Control (Accessibility)")
+
     // ---- apps ----
     fun openedApp(l: Lang, app: String) = t(l, "Opening $app, $sir.", "$app open कर रहा हूँ, $sir.", "$app खोल रहा हूँ, $sir.")
     fun appMissing(l: Lang, app: String) = t(l, "$sir, I couldn't find an app called $app.", "$sir, $app नाम का app नहीं मिला।", "$sir, $app नाम का ऐप नहीं मिला।")

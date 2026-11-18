@@ -63,6 +63,25 @@ Free quota me roz ~100 searches. Key se Jarvis exact gaana chalata hai aur kai a
 - "Google par search karo" · "Chrome mein Google search karo" · "Maps mein Puri Jagannath mandir dikhao"
 - Devanagari aur English me bhi: "यूट्यूब पर अरिजीत सिंह का गाना चलाओ", "play Tum Hi Ho by Arijit Singh"
 
+## Voice mouse — kisi bhi app ko awaaz se chalao
+
+Phone Control (Accessibility) on hona chahiye. Jab tak cursor / numbers / grid screen par hain, har command se pehle
+"Jarvis" bolna zaroori nahi (30 second tak), aur chhote kaam ke baad sirf ek "tick" awaaz aati hai.
+
+| Bolo | Kya hota hai |
+|---|---|
+| "cursor dikhao" / "mouse on karo" | Screen ke beech me mouse pointer |
+| "neeche", "thoda upar", "bahut right", "cursor left karo" | Pointer hilta hai (thoda = chhota kadam, bahut = bada) |
+| "click karo" / "double click" / "dabaye rakho" | Pointer ki jagah tap / double tap / long press |
+| "cursor Subscribe par le jao" | Pointer us button par |
+| "numbers dikhao" → "5 dabao" / "5" | Har button par number; number bolo, wo dab jaata hai (naye screen par number apne aap badalte hain) |
+| "grid dikhao" → "7 par click karo" | Screen 24 khaanon me; game / map jaise apps ke liye |
+| "Subscribe par click karo", "सब्सक्राइब दबाओ", "Send dabao" | Naam se button dabana (Hindi naam bhi chalega) |
+| "neeche scroll karo", "upar scroll", "bahut neeche scroll karo" | Scroll (pointer ho to usi jagah) |
+| "Arijit Singh type karo", "hello type karo aur enter dabao", "enter dabao" | Text box me likhna |
+| "back jao", "home par jao", "recent apps", "notification kholo" | System buttons |
+| "cursor hatao" / "numbers hatao" | Sab hata do |
+
 Baaki sab (jaise "Wi-Fi band karo", sawal-jawab, kisi app me kuch dhoondhna) Gemini sambhalta hai.
 
 ## Code ka naksha

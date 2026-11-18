@@ -14,6 +14,7 @@ import com.swadhin.jarvis.nlu.MusicApp
 import com.swadhin.jarvis.nlu.MusicKind
 import com.swadhin.jarvis.nlu.MusicMemory
 import com.swadhin.jarvis.nlu.Replies
+import com.swadhin.jarvis.nlu.ScreenAction
 import com.swadhin.jarvis.nlu.Talk
 import com.swadhin.jarvis.nlu.TimeParser
 import com.swadhin.jarvis.nlu.VolOp
@@ -80,7 +81,7 @@ class Assistant(
             JarvisService.log("Error: ${e.message}")
             Reply(say.failed(l, e.message ?: e.javaClass.simpleName), l)
         }
-        if (!usedAi) gemini.remember(raw, reply.text)
+        if (!usedAi && reply.text.isNotBlank()) gemini.remember(raw, reply.text)
         return reply
     }
 
@@ -249,6 +250,7 @@ class Assistant(
             if (r.has("error")) Reply(say.failed(l, r.optString("error")), l) else Reply(say.maps(l, cmd.query, cmd.navigate), l)
         }
         is Command.Info -> info(cmd.what, l)
+        is Command.Screen -> screen(cmd, l)
         is Command.Unknown -> ai(raw, l)
     }
 
@@ -433,6 +435,88 @@ class Assistant(
                 w.optString("feels_like_c"), w.optInt("chance_of_rain"), tomorrow, w.optString("max_c"), w.optString("min_c")
             ), l
         )
+    }
+
+    // ------------------------------------------------------------------ screen control (voice mouse)
+
+    /**
+     * An empty reply text means "done, nothing to say": the service just plays a short tick, so moving the
+     * cursor step by step stays fast.
+     */
+    private fun screen(cmd: Command.Screen, l: Lang): Reply {
+        val a = JarvisAccessibility.instance ?: return Reply(say.needAccessibility(l), l)
+        val ok = Reply("", l)
+        val fail = Reply(say.actionFailed(l), l)
+        fun repeatCount() = if (cmd.step >= 0.25f) 3 else 1
+        fun scrollAt(dir: String): Boolean {
+            val pos = a.cursorPos()
+            var done = false
+            repeat(repeatCount()) { if (a.scroll(dir, pos?.first, pos?.second)) done = true; Thread.sleep(250) }
+            if (a.overlayMode() == ScreenOverlay.Mode.NUMBERS) { Thread.sleep(500); a.showNumbers() }
+            return done
+        }
+        fun afterTap() {
+            if (a.overlayMode() == ScreenOverlay.Mode.NUMBERS) { Thread.sleep(1000); a.showNumbers() }
+        }
+        return when (cmd.action) {
+            ScreenAction.CURSOR_SHOW -> { a.cursorShow(); Reply(say.cursorShown(l), l) }
+            ScreenAction.MOVE_CURSOR -> { a.cursorMove(cmd.dir ?: "down", cmd.step); ok }
+            ScreenAction.MOVE -> if (a.cursorVisible()) { a.cursorMove(cmd.dir ?: "down", cmd.step); ok }
+                else if (scrollAt(cmd.dir ?: "down")) ok else Reply(say.cantScroll(l), l)
+            ScreenAction.SCROLL -> if (scrollAt(cmd.dir ?: "down")) ok else Reply(say.cantScroll(l), l)
+            ScreenAction.CURSOR_TO -> {
+                val n = a.findByText(cmd.text) ?: return Reply(say.notOnScreen(l, cmd.text), l)
+                val (x, y) = a.center(n)
+                a.cursorTo(x, y); ok
+            }
+            ScreenAction.OVERLAY_HIDE -> { a.hideOverlay(); Reply(say.overlayHidden(l), l) }
+            ScreenAction.NUMBERS_SHOW -> {
+                val n = a.showNumbers()
+                if (n == 0) Reply(say.notOnScreen(l, "buttons"), l) else Reply(say.numbersShown(l, n), l)
+            }
+            ScreenAction.GRID_SHOW -> Reply(say.gridShown(l, a.showGrid()), l)
+            ScreenAction.CLICK, ScreenAction.DOUBLE_CLICK, ScreenAction.LONG_PRESS -> {
+                val pos = a.cursorPos()
+                val target = if (cmd.text.isNotBlank()) a.findByText(cmd.text) else null
+                if (cmd.text.isNotBlank() && target == null) return Reply(say.notOnScreen(l, cmd.text), l)
+                val (x, y) = when {
+                    target != null -> a.center(target)
+                    pos != null -> pos
+                    else -> {
+                        // No cursor yet: show it so the user can point.
+                        a.cursorShow()
+                        return Reply(say.cursorShown(l), l)
+                    }
+                }
+                val done = when (cmd.action) {
+                    ScreenAction.DOUBLE_CLICK -> a.doubleTapAt(x, y)
+                    ScreenAction.LONG_PRESS -> a.longPressAt(x, y)
+                    else -> a.tapAt(x, y)
+                }
+                if (done) { afterTap(); ok } else fail
+            }
+            ScreenAction.TAP_TEXT -> {
+                if (a.tapText(cmd.text)) { afterTap(); ok } else Reply(say.notOnScreen(l, cmd.text), l)
+            }
+            ScreenAction.PICK -> {
+                val mode = a.overlayMode()
+                if (mode != ScreenOverlay.Mode.NUMBERS && mode != ScreenOverlay.Mode.GRID) {
+                    // no numbers on screen: maybe a button literally labelled "5"
+                    return if (a.tapText(cmd.number.toString())) ok else Reply(say.noNumbers(l), l)
+                }
+                if (a.pickNumber(cmd.number, cmd.text)) { if (cmd.text != "cursor") afterTap(); ok }
+                else Reply(say.badNumber(l, cmd.number), l)
+            }
+            ScreenAction.TYPE -> {
+                if (cmd.text.isBlank()) return Reply(say.askSearch(l), l)
+                if (a.typeText(cmd.text, cmd.enter)) Reply(say.typed(l, cmd.text), l) else Reply(say.noTextBox(l), l)
+            }
+            ScreenAction.ENTER -> if (a.pressEnter()) ok else fail
+            ScreenAction.BACK -> if (a.global("back")) ok else fail
+            ScreenAction.HOME -> if (a.global("home")) ok else fail
+            ScreenAction.RECENTS -> if (a.global("recents")) ok else fail
+            ScreenAction.NOTIF_SHADE -> if (a.global("notifications")) ok else fail
+        }
     }
 
     // ------------------------------------------------------------------ AI fallback
